@@ -16,6 +16,7 @@ mod report;
 pub use report::RecoveryReport;
 
 use crate::scheduler::Executor;
+use crate::suspension::{SuspendedTraceState, SuspensionStore};
 use std::sync::Arc;
 use xerv_core::error::{Result, XervError};
 use xerv_core::types::{NodeId, TraceId};
@@ -53,12 +54,34 @@ pub enum RecoveryAction {
 pub struct CrashReplayer {
     wal: Arc<Wal>,
     executor: Arc<Executor>,
+    suspension_store: Option<Arc<dyn SuspensionStore>>,
+    pipeline_id: String,
 }
 
 impl CrashReplayer {
     /// Create a new crash replayer.
     pub fn new(wal: Arc<Wal>, executor: Arc<Executor>) -> Self {
-        Self { wal, executor }
+        Self {
+            wal,
+            executor,
+            suspension_store: None,
+            pipeline_id: "unknown".to_string(),
+        }
+    }
+
+    /// Create a crash replayer with a suspension store for restoring suspended traces.
+    pub fn with_suspension_store(
+        wal: Arc<Wal>,
+        executor: Arc<Executor>,
+        suspension_store: Arc<dyn SuspensionStore>,
+        pipeline_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            wal,
+            executor,
+            suspension_store: Some(suspension_store),
+            pipeline_id: pipeline_id.into(),
+        }
     }
 
     /// Recover all incomplete traces on startup.
@@ -118,6 +141,24 @@ impl CrashReplayer {
                     }
                 }
                 RecoveryAction::AwaitResume { suspended_at } => {
+                    // If we have a suspension store, restore the suspended trace to it
+                    if let Some(ref store) = self.suspension_store {
+                        if let Err(e) =
+                            self.restore_suspended_trace(trace_id, suspended_at, &state, store)
+                        {
+                            tracing::warn!(
+                                trace_id = %trace_id,
+                                error = %e,
+                                "Failed to restore suspended trace to store"
+                            );
+                        } else {
+                            tracing::info!(
+                                trace_id = %trace_id,
+                                suspended_at = %suspended_at,
+                                "Suspended trace restored to store"
+                            );
+                        }
+                    }
                     report.add_awaiting_resume(trace_id);
                     tracing::info!(
                         trace_id = %trace_id,
@@ -226,6 +267,43 @@ impl CrashReplayer {
         self.executor
             .resume_trace(arena, &modified_state, None)
             .await
+    }
+
+    /// Restore a suspended trace to the suspension store.
+    ///
+    /// This is called during crash recovery when a suspended trace is found
+    /// so that it can be resumed via the API.
+    fn restore_suspended_trace(
+        &self,
+        trace_id: TraceId,
+        suspended_at: NodeId,
+        _state: &TraceRecoveryState,
+        store: &Arc<dyn SuspensionStore>,
+    ) -> Result<()> {
+        // Get the arena path
+        let arena_dir = std::path::PathBuf::from("/tmp/xerv");
+        let arena_path = arena_dir.join(format!("trace_{}.bin", trace_id.as_uuid()));
+
+        // Create a hook ID based on the trace ID (we don't have the original hook_id
+        // stored in TraceRecoveryState, so we generate one based on trace_id)
+        let hook_id = format!("recovered_{}", trace_id.as_uuid());
+
+        // Create suspended state with minimal info
+        // In a full implementation, we'd parse metadata from WAL records
+        let suspended = SuspendedTraceState::new(
+            &hook_id,
+            trace_id,
+            suspended_at,
+            arena_path,
+            &self.pipeline_id,
+        )
+        .with_metadata(serde_json::json!({
+            "recovered": true,
+            "recovery_time": chrono::Utc::now().to_rfc3339(),
+        }));
+
+        // Store in suspension store
+        store.suspend(suspended)
     }
 
     /// Load the arena file for a trace from disk.
