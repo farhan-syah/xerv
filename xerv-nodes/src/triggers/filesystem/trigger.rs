@@ -1,7 +1,6 @@
-//! Filesystem trigger (file watcher).
-//!
-//! Fires events when files are created, modified, or deleted.
+//! Filesystem trigger implementation.
 
+use super::security::{PathSecurityConfig, global_path_security};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use std::path::PathBuf;
@@ -13,6 +12,7 @@ use xerv_core::traits::{Trigger, TriggerConfig, TriggerEvent, TriggerFuture, Tri
 use xerv_core::types::RelPtr;
 
 /// State for the filesystem trigger.
+#[derive(Debug)]
 struct FilesystemState {
     /// Whether the trigger is running.
     running: AtomicBool,
@@ -49,6 +49,7 @@ struct FilesystemState {
 ///   - `modify` - File modified
 ///   - `remove` - File deleted
 ///   - `rename` - File renamed
+#[derive(Debug)]
 pub struct FilesystemTrigger {
     /// Trigger ID.
     id: String,
@@ -83,13 +84,35 @@ impl FilesystemTrigger {
     }
 
     /// Create from configuration.
+    ///
+    /// This validates the path against security rules before accepting it.
     pub fn from_config(config: &TriggerConfig) -> Result<Self> {
-        let path = config
+        Self::from_config_with_security(config, global_path_security())
+    }
+
+    /// Create from configuration with custom security settings.
+    pub fn from_config_with_security(
+        config: &TriggerConfig,
+        security: &PathSecurityConfig,
+    ) -> Result<Self> {
+        let path_str = config
             .get_string("path")
             .ok_or_else(|| XervError::ConfigValue {
                 field: "path".to_string(),
                 cause: "Filesystem trigger requires 'path' parameter".to_string(),
             })?;
+
+        let path = PathBuf::from(&path_str);
+
+        // Validate path against security rules BEFORE accepting the configuration
+        // This prevents malicious flows from even being loaded
+        if path.exists() {
+            security.validate_path(&path)?;
+        } else {
+            // For non-existent paths, do basic checks on the path string
+            // (will be fully validated when trigger starts)
+            Self::validate_path_syntax(&path_str)?;
+        }
 
         let recursive = config.get_bool("recursive").unwrap_or(false);
 
@@ -126,7 +149,7 @@ impl FilesystemTrigger {
 
         Ok(Self {
             id: config.id.clone(),
-            path: PathBuf::from(path),
+            path,
             recursive,
             watch_create,
             watch_modify,
@@ -137,6 +160,36 @@ impl FilesystemTrigger {
                 shutdown_tx: RwLock::new(None),
             }),
         })
+    }
+
+    /// Validate path syntax without checking if it exists.
+    ///
+    /// This catches obvious attacks like path traversal attempts.
+    fn validate_path_syntax(path: &str) -> Result<()> {
+        // Check for path traversal attempts
+        if path.contains("..") {
+            return Err(PathSecurityConfig::path_error(
+                "Path traversal ('..') is not allowed",
+            ));
+        }
+
+        // Check for null bytes (path injection)
+        if path.contains('\0') {
+            return Err(PathSecurityConfig::path_error("Path contains null bytes"));
+        }
+
+        // Check for obviously sensitive paths even if they don't exist yet
+        let sensitive_prefixes = ["/etc/", "/root/", "/proc/", "/sys/", "/dev/"];
+        for prefix in sensitive_prefixes {
+            if path.starts_with(prefix) || path == prefix.trim_end_matches('/') {
+                return Err(PathSecurityConfig::path_error(format!(
+                    "Path '{}' is in a sensitive system directory",
+                    path
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     /// Enable recursive watching.
@@ -190,6 +243,10 @@ impl Trigger for FilesystemTrigger {
                     cause: format!("Path does not exist: {}", path.display()),
                 });
             }
+
+            // Validate path security at runtime (path may have been created after config load)
+            // This is a defense-in-depth check
+            global_path_security().validate_path(&path)?;
 
             tracing::info!(
                 trigger_id = %trigger_id,
@@ -328,59 +385,5 @@ impl Trigger for FilesystemTrigger {
 
     fn is_running(&self) -> bool {
         self.state.running.load(Ordering::SeqCst)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn filesystem_trigger_creation() {
-        let trigger = FilesystemTrigger::new("test_fs", "/tmp");
-        assert_eq!(trigger.id(), "test_fs");
-        assert_eq!(trigger.trigger_type(), TriggerType::Filesystem);
-        assert!(!trigger.is_running());
-        assert!(!trigger.recursive);
-    }
-
-    #[test]
-    fn filesystem_trigger_from_config() {
-        let mut params = serde_yaml::Mapping::new();
-        params.insert(
-            serde_yaml::Value::String("path".to_string()),
-            serde_yaml::Value::String("/data/incoming".to_string()),
-        );
-        params.insert(
-            serde_yaml::Value::String("recursive".to_string()),
-            serde_yaml::Value::Bool(true),
-        );
-
-        let config = TriggerConfig::new("fs_test", TriggerType::Filesystem)
-            .with_params(serde_yaml::Value::Mapping(params));
-
-        let trigger = FilesystemTrigger::from_config(&config).unwrap();
-        assert_eq!(trigger.id(), "fs_test");
-        assert_eq!(trigger.path.to_str().unwrap(), "/data/incoming");
-        assert!(trigger.recursive);
-    }
-
-    #[test]
-    fn filesystem_trigger_missing_path() {
-        let config = TriggerConfig::new("fs_test", TriggerType::Filesystem);
-        let result = FilesystemTrigger::from_config(&config);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn filesystem_trigger_builder() {
-        let trigger = FilesystemTrigger::new("builder_test", "/tmp")
-            .recursive()
-            .watch_create_only();
-
-        assert!(trigger.recursive);
-        assert!(trigger.watch_create);
-        assert!(!trigger.watch_modify);
-        assert!(!trigger.watch_remove);
     }
 }

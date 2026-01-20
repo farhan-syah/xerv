@@ -41,6 +41,7 @@ bytes.workspace = true
 cron.workspace = true
 notify.workspace = true
 parking_lot.workspace = true
+dirs = "5.0"
 
 # Kafka dependencies (optional)
 rdkafka = { version = "0.36", features = ["cmake-build", "tokio"], optional = true }

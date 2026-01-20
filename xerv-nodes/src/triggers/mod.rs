@@ -20,7 +20,9 @@ mod queue;
 mod webhook;
 
 pub use self::cron::CronTrigger;
-pub use filesystem::FilesystemTrigger;
+pub use filesystem::{
+    FilesystemTrigger, PathSecurityConfig, global_path_security, set_global_path_security,
+};
 pub use kafka::KafkaTrigger;
 pub use manual::{ManualEvent, ManualFireHandle, ManualTrigger};
 pub use memory::{MemoryInjector, MemoryTrigger};
