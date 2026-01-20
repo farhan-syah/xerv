@@ -1,0 +1,89 @@
+# XERV Operator RBAC Configuration
+# This file contains the ServiceAccount, ClusterRole, and ClusterRoleBinding
+# needed to run the XERV operator in a Kubernetes cluster.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: xerv-operator
+  namespace: xerv-system
+  labels:
+    app.kubernetes.io/name: xerv-operator
+    app.kubernetes.io/component: operator
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: xerv-operator
+  labels:
+    app.kubernetes.io/name: xerv-operator
+    app.kubernetes.io/component: operator
+rules:
+  # XervCluster and XervPipeline CRDs
+  - apiGroups: ["xerv.io"]
+    resources:
+      - xervclusters
+      - xervpipelines
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Status subresources
+  - apiGroups: ["xerv.io"]
+    resources:
+      - xervclusters/status
+      - xervpipelines/status
+    verbs: ["get", "update", "patch"]
+
+  # Finalizers
+  - apiGroups: ["xerv.io"]
+    resources:
+      - xervclusters/finalizers
+      - xervpipelines/finalizers
+    verbs: ["update"]
+
+  # Core resources for cluster management
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/status
+      - services
+      - configmaps
+      - secrets
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Workloads
+  - apiGroups: ["apps"]
+    resources:
+      - statefulsets
+      - deployments
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Events for status reporting
+  - apiGroups: [""]
+    resources:
+      - events
+    verbs: ["create", "patch"]
+
+  # Coordination for leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources:
+      - leases
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: xerv-operator
+  labels:
+    app.kubernetes.io/name: xerv-operator
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: xerv-operator
+subjects:
+  - kind: ServiceAccount
+    name: xerv-operator
+    namespace: xerv-system

@@ -1,0 +1,20 @@
+# Kustomization for XERV Operator
+# Usage: kubectl apply -k deploy/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: xerv-system
+
+resources:
+  - crds.yaml
+  - rbac.yaml
+  - deployment.yaml
+
+commonLabels:
+  app.kubernetes.io/name: xerv-operator
+  app.kubernetes.io/version: "0.1.0"
+  app.kubernetes.io/part-of: xerv
+
+images:
+  - name: ghcr.io/ml-rust/xerv-operator
+    newTag: latest
