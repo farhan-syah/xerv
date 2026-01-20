@@ -53,12 +53,20 @@ impl<'a> ApiKeyValidator<'a> {
 
     /// Validate an API key and return the authentication context.
     ///
-    /// Returns `None` if the key is invalid or not found.
+    /// Returns `None` if the key is invalid, expired, or not found.
     pub fn validate(&self, key: &str) -> Option<AuthContext> {
         let key_hash = ApiKeyHash::from_plaintext(key);
 
         for entry in &self.config.keys {
             if entry.key_hash.to_lowercase() == key_hash.as_str() {
+                // Check expiration
+                if entry.is_expired() {
+                    tracing::warn!(
+                        identity = %entry.identity,
+                        "API key has expired"
+                    );
+                    return None;
+                }
                 return Some(AuthContext::new(
                     entry.identity.clone(),
                     entry.scopes.clone(),
@@ -73,6 +81,14 @@ impl<'a> ApiKeyValidator<'a> {
     pub fn validate_hash(&self, hash: &ApiKeyHash) -> Option<AuthContext> {
         for entry in &self.config.keys {
             if entry.key_hash.to_lowercase() == hash.as_str() {
+                // Check expiration
+                if entry.is_expired() {
+                    tracing::warn!(
+                        identity = %entry.identity,
+                        "API key has expired"
+                    );
+                    return None;
+                }
                 return Some(AuthContext::new(
                     entry.identity.clone(),
                     entry.scopes.clone(),
@@ -88,6 +104,7 @@ impl<'a> ApiKeyValidator<'a> {
 pub struct ApiKeyBuilder {
     identity: String,
     scopes: HashSet<AuthScope>,
+    expires_at: Option<u64>,
 }
 
 impl ApiKeyBuilder {
@@ -96,6 +113,7 @@ impl ApiKeyBuilder {
         Self {
             identity: identity.into(),
             scopes: HashSet::new(),
+            expires_at: None,
         }
     }
 
@@ -123,6 +141,27 @@ impl ApiKeyBuilder {
         self
     }
 
+    /// Set expiration time as Unix timestamp (seconds since epoch).
+    pub fn expires_at(mut self, timestamp: u64) -> Self {
+        self.expires_at = Some(timestamp);
+        self
+    }
+
+    /// Set expiration relative to now (in seconds).
+    pub fn expires_in(mut self, seconds: u64) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.expires_at = Some(now + seconds);
+        self
+    }
+
+    /// Set expiration in days from now.
+    pub fn expires_in_days(self, days: u64) -> Self {
+        self.expires_in(days * 24 * 60 * 60)
+    }
+
     /// Build the API key entry with a plaintext key.
     pub fn build_with_key(self, plaintext_key: &str) -> super::config::ApiKeyEntry {
         let hash = ApiKeyHash::from_plaintext(plaintext_key);
@@ -130,6 +169,7 @@ impl ApiKeyBuilder {
             identity: self.identity,
             key_hash: hash.0,
             scopes: self.scopes,
+            expires_at: self.expires_at,
         }
     }
 
@@ -139,6 +179,7 @@ impl ApiKeyBuilder {
             identity: self.identity,
             key_hash: hash.into().to_lowercase(),
             scopes: self.scopes,
+            expires_at: self.expires_at,
         }
     }
 }
@@ -216,5 +257,67 @@ mod tests {
         assert!(entry.scopes.contains(&AuthScope::TraceRead));
         assert!(entry.scopes.contains(&AuthScope::TraceResume));
         assert!(!entry.scopes.contains(&AuthScope::PipelineWrite));
+    }
+
+    #[test]
+    fn validate_expired_key_fails() {
+        // Create a key that expired 1 second ago
+        let expired_entry = ApiKeyBuilder::new("expired-client")
+            .with_scope(AuthScope::PipelineRead)
+            .expires_at(0) // Expired at Unix epoch
+            .build_with_key("expired-key");
+
+        let config = ApiKeyConfig::new().with_key(expired_entry);
+        let validator = ApiKeyValidator::new(&config);
+
+        // Should fail validation
+        let ctx = validator.validate("expired-key");
+        assert!(ctx.is_none());
+    }
+
+    #[test]
+    fn validate_non_expired_key_succeeds() {
+        // Create a key that expires far in the future
+        let future_entry = ApiKeyBuilder::new("future-client")
+            .with_scope(AuthScope::PipelineRead)
+            .expires_at(u64::MAX) // Expires very far in the future
+            .build_with_key("future-key");
+
+        let config = ApiKeyConfig::new().with_key(future_entry);
+        let validator = ApiKeyValidator::new(&config);
+
+        // Should succeed validation
+        let ctx = validator.validate("future-key");
+        assert!(ctx.is_some());
+        assert_eq!(ctx.unwrap().identity, "future-client");
+    }
+
+    #[test]
+    fn validate_no_expiration_succeeds() {
+        // Key without expiration should always work
+        let entry = ApiKeyBuilder::new("no-expiry")
+            .with_scope(AuthScope::PipelineRead)
+            .build_with_key("no-expiry-key");
+
+        assert!(entry.expires_at.is_none());
+
+        let config = ApiKeyConfig::new().with_key(entry);
+        let validator = ApiKeyValidator::new(&config);
+
+        let ctx = validator.validate("no-expiry-key");
+        assert!(ctx.is_some());
+    }
+
+    #[test]
+    fn builder_expires_in_days() {
+        let entry = ApiKeyBuilder::new("temp-client")
+            .expires_in_days(30)
+            .build_with_key("temp-key");
+
+        // Should have an expiration set
+        assert!(entry.expires_at.is_some());
+
+        // Should not be expired yet
+        assert!(!entry.is_expired());
     }
 }

@@ -110,6 +110,9 @@ pub struct ApiKeyEntry {
     pub key_hash: String,
     /// Scopes granted to this key.
     pub scopes: HashSet<AuthScope>,
+    /// Optional expiration time (Unix timestamp in seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
 }
 
 impl ApiKeyEntry {
@@ -119,6 +122,7 @@ impl ApiKeyEntry {
             identity: identity.into(),
             key_hash: key_hash.into(),
             scopes: HashSet::new(),
+            expires_at: None,
         }
     }
 
@@ -138,6 +142,35 @@ impl ApiKeyEntry {
     pub fn with_all_scopes(mut self) -> Self {
         self.scopes = AuthScope::all();
         self
+    }
+
+    /// Set expiration time as Unix timestamp (seconds since epoch).
+    pub fn with_expires_at(mut self, timestamp: u64) -> Self {
+        self.expires_at = Some(timestamp);
+        self
+    }
+
+    /// Set expiration relative to now (in seconds).
+    pub fn expires_in(mut self, seconds: u64) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.expires_at = Some(now + seconds);
+        self
+    }
+
+    /// Check if this key has expired.
+    pub fn is_expired(&self) -> bool {
+        if let Some(expires_at) = self.expires_at {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            now >= expires_at
+        } else {
+            false
+        }
     }
 }
 
