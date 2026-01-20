@@ -1,0 +1,182 @@
+# XERV Helm Chart Values
+#
+# For full documentation, see: https://github.com/ml-rust/xerv
+
+# Number of replicas
+# For Raft backend, use odd numbers (1, 3, 5) for quorum
+replicaCount: 1
+
+image:
+  repository: ghcr.io/ml-rust/xerv
+  tag: ""  # Defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Dispatch backend configuration
+dispatch:
+  # Backend type: memory, raft, redis, nats
+  backend: memory
+
+  # Redis configuration (when backend is "redis")
+  redis:
+    # External Redis URL (required for redis backend)
+    url: ""
+    # Use Redis Streams for reliable delivery
+    useStreams: true
+    # Connection pool size
+    poolSize: 10
+    # Consumer group name
+    consumerGroup: xerv-workers
+
+  # NATS configuration (when backend is "nats")
+  nats:
+    # External NATS URL (required for nats backend)
+    url: ""
+    # Use JetStream for persistence
+    useJetstream: true
+    # Stream name for traces
+    streamName: XERV_TRACES
+
+  # Raft configuration (when backend is "raft")
+  raft:
+    # Election timeout in milliseconds
+    electionTimeoutMs: 1000
+    # Heartbeat interval in milliseconds
+    heartbeatIntervalMs: 100
+
+# Server configuration
+server:
+  # HTTP API port
+  apiPort: 8080
+  # gRPC port (used for Raft peer communication)
+  grpcPort: 5000
+
+# Metrics configuration
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+# Storage configuration
+storage:
+  # Storage class (leave empty for default)
+  class: ""
+  # Storage size
+  size: 10Gi
+  # Access mode
+  accessMode: ReadWriteOnce
+
+# Resource requests and limits
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Service configuration
+service:
+  type: ClusterIP
+  # Annotations for the service
+  annotations: {}
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: xerv.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: xerv-tls
+    #   hosts:
+    #     - xerv.local
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Service account
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity rules
+affinity: {}
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+# Liveness probe
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Readiness probe
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Extra environment variables
+extraEnv: []
+  # - name: RUST_LOG
+  #   value: xerv=debug
+
+# Extra volume mounts
+extraVolumeMounts: []
+  # - name: pipelines
+  #   mountPath: /pipelines
+  #   readOnly: true
+
+# Extra volumes
+extraVolumes: []
+  # - name: pipelines
+  #   configMap:
+  #     name: xerv-pipelines
+
+# Network policy
+networkPolicy:
+  enabled: false
+  ingress: []
+  egress: []

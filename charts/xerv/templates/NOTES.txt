@@ -1,0 +1,72 @@
+XERV has been installed!
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Backend: {{ .Values.dispatch.backend }}
+
+{{- if eq .Values.dispatch.backend "raft" }}
+Deployment Type: StatefulSet ({{ .Values.replicaCount }} replicas)
+{{- else }}
+Deployment Type: Deployment ({{ .Values.replicaCount }} replicas)
+{{- end }}
+
+To access XERV:
+
+1. Get the application URL:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ (index $host.paths 0).path }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "xerv.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+  Watch status: kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "xerv.fullname" . }}
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "xerv.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo http://$SERVICE_IP:{{ .Values.server.apiPort }}
+{{- else if contains "ClusterIP" .Values.service.type }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "xerv.fullname" . }} {{ .Values.server.apiPort }}:{{ .Values.server.apiPort }}
+  echo "Visit http://127.0.0.1:{{ .Values.server.apiPort }}"
+{{- end }}
+
+2. Check the status:
+  kubectl --namespace {{ .Release.Namespace }} get pods -l "app.kubernetes.io/name={{ include "xerv.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+
+3. View logs:
+  kubectl --namespace {{ .Release.Namespace }} logs -l "app.kubernetes.io/name={{ include "xerv.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -f
+
+{{- if .Values.metrics.enabled }}
+
+4. Metrics are available at port {{ .Values.metrics.port }}{{ .Values.metrics.path }}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+   ServiceMonitor is enabled for Prometheus Operator.
+{{- end }}
+{{- end }}
+
+{{- if eq .Values.dispatch.backend "raft" }}
+
+NOTE: You are using the Raft backend. For production:
+- Use an odd number of replicas (3, 5) for quorum
+- Ensure persistent storage is configured
+- Consider using anti-affinity rules for high availability
+{{- end }}
+
+{{- if eq .Values.dispatch.backend "redis" }}
+{{- if not .Values.dispatch.redis.url }}
+
+WARNING: Redis URL is not configured!
+Set dispatch.redis.url in your values to connect to Redis.
+{{- end }}
+{{- end }}
+
+{{- if eq .Values.dispatch.backend "nats" }}
+{{- if not .Values.dispatch.nats.url }}
+
+WARNING: NATS URL is not configured!
+Set dispatch.nats.url in your values to connect to NATS.
+{{- end }}
+{{- end }}
+
+For more information, visit: https://github.com/ml-rust/xerv

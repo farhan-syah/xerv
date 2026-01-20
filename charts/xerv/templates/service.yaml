@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.server.apiPort }}
+      targetPort: http
+      protocol: TCP
+    {{- if eq .Values.dispatch.backend "raft" }}
+    - name: grpc
+      port: {{ .Values.server.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "xerv.selectorLabels" . | nindent 4 }}
+
+{{- if eq .Values.dispatch.backend "raft" }}
+---
+# Headless service for Raft peer discovery
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "xerv.headlessServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: {{ .Values.server.apiPort }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.server.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    {{- include "xerv.selectorLabels" . | nindent 4 }}
+{{- end }}

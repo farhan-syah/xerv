@@ -1,0 +1,137 @@
+{{- if eq .Values.dispatch.backend "raft" }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  serviceName: {{ include "xerv.headlessServiceName" . }}
+  selector:
+    matchLabels:
+      {{- include "xerv.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "xerv.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "xerv.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: xerv
+          image: {{ include "xerv.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.apiPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.server.grpcPort }}
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          env:
+            - name: XERV_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: XERV_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: XERV_CLUSTER
+              value: {{ include "xerv.fullname" . }}
+            - name: XERV_DISPATCH_BACKEND
+              value: {{ .Values.dispatch.backend }}
+            - name: XERV_API_PORT
+              value: {{ .Values.server.apiPort | quote }}
+            - name: XERV_GRPC_PORT
+              value: {{ .Values.server.grpcPort | quote }}
+            - name: XERV_DATA_DIR
+              value: /data
+            - name: XERV_REPLICAS
+              value: {{ .Values.replicaCount | quote }}
+            - name: XERV_HEADLESS_SERVICE
+              value: {{ include "xerv.headlessServiceName" . }}
+            {{- if .Values.metrics.enabled }}
+            - name: XERV_METRICS_ENABLED
+              value: "true"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+              readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "xerv.fullname" . }}-config
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - {{ .Values.storage.accessMode }}
+        {{- if .Values.storage.class }}
+        storageClassName: {{ .Values.storage.class }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}
+{{- end }}

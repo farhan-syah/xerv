@@ -1,0 +1,58 @@
+# XERV Docker Compose - Redis Backend
+#
+# High-throughput setup with Redis Streams for dispatch.
+# Use this for production-like testing or when you need higher throughput.
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.redis.yaml up -d
+#   docker compose -f docker-compose.yaml -f docker-compose.redis.yaml down
+#
+# Or use the convenience script:
+#   ./start-redis.sh
+
+services:
+  xerv:
+    environment:
+      # Override dispatch backend to Redis
+      XERV_DISPATCH_BACKEND: redis
+      XERV_DISPATCH_REDIS_URL: redis://redis:6379
+      XERV_DISPATCH_REDIS_STREAMS: "true"
+      XERV_DISPATCH_REDIS_POOL_SIZE: "10"
+      XERV_DISPATCH_REDIS_CONSUMER_GROUP: xerv-workers
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: xerv-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Optional: Redis Commander for debugging
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: xerv-redis-commander
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    profiles:
+      - debug
+
+volumes:
+  redis-data:
+    driver: local

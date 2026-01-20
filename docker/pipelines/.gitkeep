@@ -1,0 +1,2 @@
+# Place pipeline YAML files here
+# They will be mounted to /pipelines in the container

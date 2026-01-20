@@ -1,0 +1,51 @@
+# XERV Docker Compose - Local Development
+#
+# Basic single-node setup with in-memory dispatch backend.
+# Perfect for local development and testing.
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f xerv
+#   docker compose down
+#
+# API available at: http://localhost:8080
+
+services:
+  xerv:
+    image: ghcr.io/ml-rust/xerv:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: xerv
+    restart: unless-stopped
+    environment:
+      # Dispatch backend (memory is default, no external dependencies)
+      XERV_DISPATCH_BACKEND: memory
+
+      # Server configuration
+      XERV_API_PORT: "8080"
+      XERV_DATA_DIR: /data
+
+      # Logging
+      RUST_LOG: xerv=info
+
+      # Metrics (optional)
+      XERV_METRICS_ENABLED: "true"
+    ports:
+      - "8080:8080"   # HTTP API
+      - "9090:9090"   # Metrics (Prometheus)
+    volumes:
+      # Persistent data (arena, WAL)
+      - xerv-data:/data
+      # Pipeline definitions (mount your pipelines here)
+      - ./pipelines:/pipelines:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  xerv-data:
+    driver: local

@@ -1,0 +1,60 @@
+# XERV Docker Compose - NATS Backend
+#
+# Cloud-native setup with NATS JetStream for dispatch.
+# Use this for event-driven architectures or cloud-native deployments.
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.nats.yaml up -d
+#   docker compose -f docker-compose.yaml -f docker-compose.nats.yaml down
+#
+# Or use the convenience script:
+#   ./start-nats.sh
+
+services:
+  xerv:
+    environment:
+      # Override dispatch backend to NATS
+      XERV_DISPATCH_BACKEND: nats
+      XERV_DISPATCH_NATS_URL: nats://nats:4222
+      XERV_DISPATCH_NATS_JETSTREAM: "true"
+      XERV_DISPATCH_NATS_STREAM: XERV_TRACES
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  nats:
+    image: nats:2-alpine
+    container_name: xerv-nats
+    restart: unless-stopped
+    command:
+      - "--jetstream"
+      - "--store_dir=/data"
+      - "--http_port=8222"
+    ports:
+      - "4222:4222"   # Client connections
+      - "8222:8222"   # HTTP monitoring
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Optional: NATS Box for debugging
+  nats-box:
+    image: natsio/nats-box:latest
+    container_name: xerv-nats-box
+    restart: "no"
+    depends_on:
+      - nats
+    profiles:
+      - debug
+    entrypoint: /bin/sh
+    stdin_open: true
+    tty: true
+
+volumes:
+  nats-data:
+    driver: local

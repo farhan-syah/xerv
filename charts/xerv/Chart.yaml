@@ -1,0 +1,20 @@
+apiVersion: v2
+name: xerv
+description: XERV - High-performance workflow orchestration platform
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/ml-rust/xerv
+sources:
+  - https://github.com/ml-rust/xerv
+maintainers:
+  - name: ml-rust
+    url: https://github.com/ml-rust
+keywords:
+  - workflow
+  - orchestration
+  - pipeline
+  - automation
+  - raft
+annotations:
+  artifacthub.io/license: MIT
