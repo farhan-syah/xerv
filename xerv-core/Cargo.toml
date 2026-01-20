@@ -13,6 +13,15 @@ categories = ["asynchronous", "data-structures", "no-std", "development-tools"]
 readme = "../README.md"
 rust-version = "1.85"
 
+[features]
+default = []
+# Dispatch backends
+dispatch-raft = []
+dispatch-redis = ["redis", "deadpool-redis"]
+dispatch-nats = ["async-nats", "futures-util"]
+# Enable all dispatch backends
+dispatch-all = ["dispatch-raft", "dispatch-redis", "dispatch-nats"]
+
 [dependencies]
 # Workspace dependencies
 rkyv.workspace = true
@@ -51,6 +60,12 @@ crc32fast = "1.4"
 # SHA-256 for API key hashing
 sha2 = "0.10"
 hex = "0.4"
+
+# Optional dispatch backends
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
+deadpool-redis = { version = "0.18", optional = true }
+async-nats = { version = "0.38", optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile = "3.24"

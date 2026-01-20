@@ -37,6 +37,7 @@
 
 pub mod arena;
 pub mod auth;
+pub mod dispatch;
 pub mod error;
 pub mod flow;
 pub mod logging;
