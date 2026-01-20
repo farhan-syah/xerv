@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 /// Pipeline state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PipelineState {
     /// Pipeline is initializing.
     Initializing,

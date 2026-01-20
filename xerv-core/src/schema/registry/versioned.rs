@@ -248,7 +248,8 @@ impl VersionedSchemaRegistry {
         })?;
 
         // Acquire shared lock (allows other readers, blocks writers)
-        file.lock_shared().map_err(|e| XervError::Io {
+        // Use explicit fs2::FileExt call to avoid conflict with std lock_shared (1.89+)
+        FileExt::lock_shared(&file).map_err(|e| XervError::Io {
             path: path.to_path_buf(),
             cause: format!("Failed to acquire shared lock: {}", e),
         })?;

@@ -335,7 +335,7 @@ impl NodeOutput {
     /// Returns `true` if this output has a port that matches the expected port.
     /// Useful for checking if an edge should be activated.
     pub fn matches_port(&self, expected_port: &str) -> bool {
-        self.port().map_or(false, |p| p == expected_port)
+        self.port() == Some(expected_port)
     }
 
     /// Get the arena location (offset and size) of the output data.
