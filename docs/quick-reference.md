@@ -10,7 +10,7 @@ Fast lookup for common tasks and commands.
 | `std::split` | Fan-out to collection items | `in` | `item`, `done` |
 | `std::switch` | Conditional routing | `in` | `true`, `false` |
 | `std::loop` | Iteration with exit condition | `in` | `body`, `done` |
-| `std::wait` | Human-in-the-loop approval | `in` | `resumed`, `timeout` |
+| `std::wait` | Human-in-the-loop approval | `in` | `out`, `rejected`, `escalated` |
 | `std::map` | Field transformation | `in` | `out` |
 | `std::concat` | String concatenation | `in` | `out` |
 | `std::aggregate` | Numeric aggregation | `in` | `out` |
