@@ -184,26 +184,53 @@ impl NodeInfo {
 }
 
 /// Output from a node execution.
+///
+/// Nodes return one of three variants:
+/// - `Complete`: Normal completion with data on a specific output port
+/// - `Error`: Execution error with an optional message
+/// - `Suspend`: Request to suspend the trace for human-in-the-loop approval
 #[derive(Debug)]
-pub struct NodeOutput {
-    /// The output port that was activated.
-    pub port: String,
-    /// Pointer to the output data in the arena.
-    pub data: RelPtr<()>,
-    /// Schema hash of the output data.
-    pub schema_hash: u64,
-    /// Optional error message (for error outputs without arena data).
-    pub error_message: Option<String>,
+pub enum NodeOutput {
+    /// Node completed successfully with output data.
+    Complete {
+        /// The output port that was activated (e.g., "out", "true", "false").
+        port: String,
+        /// Pointer to the output data in the arena.
+        data: RelPtr<()>,
+        /// Schema hash of the output data.
+        schema_hash: u64,
+    },
+
+    /// Node execution resulted in an error.
+    Error {
+        /// Error message describing what went wrong.
+        message: String,
+        /// Optional pointer to error data in the arena.
+        data: Option<RelPtr<()>>,
+    },
+
+    /// Node requests trace suspension (human-in-the-loop).
+    ///
+    /// When a node returns this variant, the executor will:
+    /// 1. Flush the arena to disk
+    /// 2. Store the trace state in the suspension store
+    /// 3. Remove the trace from active memory
+    /// 4. Wait for an external resume signal via the API
+    Suspend {
+        /// The suspension request with hook ID and timeout settings.
+        request: crate::suspension::SuspensionRequest,
+        /// Pointer to pending data that should be preserved.
+        pending_data: RelPtr<()>,
+    },
 }
 
 impl NodeOutput {
-    /// Create a new node output.
+    /// Create a new node output on a specific port.
     pub fn new<T>(port: impl Into<String>, data: RelPtr<T>) -> Self {
-        Self {
+        Self::Complete {
             port: port.into(),
             data: RelPtr::new(data.offset(), data.size()),
             schema_hash: 0,
-            error_message: None,
         }
     }
 
@@ -214,7 +241,10 @@ impl NodeOutput {
 
     /// Create output on the "error" port with arena data.
     pub fn error<T>(data: RelPtr<T>) -> Self {
-        Self::new("error", data)
+        Self::Error {
+            message: String::new(),
+            data: Some(RelPtr::new(data.offset(), data.size())),
+        }
     }
 
     /// Create output on the "error" port with a message string.
@@ -222,11 +252,9 @@ impl NodeOutput {
     /// Use this when you have an error message but no arena data to write.
     /// The error message will be available for logging and debugging.
     pub fn error_with_message(message: impl Into<String>) -> Self {
-        Self {
-            port: "error".to_string(),
-            data: RelPtr::null(),
-            schema_hash: 0,
-            error_message: Some(message.into()),
+        Self::Error {
+            message: message.into(),
+            data: None,
         }
     }
 
@@ -240,28 +268,110 @@ impl NodeOutput {
         Self::new("false", data)
     }
 
-    /// Set the schema hash.
+    /// Create a suspension request.
+    ///
+    /// The executor will pause this trace and wait for an external
+    /// resume signal via the API.
+    pub fn suspend<T>(
+        request: crate::suspension::SuspensionRequest,
+        pending_data: RelPtr<T>,
+    ) -> Self {
+        Self::Suspend {
+            request,
+            pending_data: RelPtr::new(pending_data.offset(), pending_data.size()),
+        }
+    }
+
+    /// Set the schema hash (only applies to Complete variant).
     pub fn with_schema_hash(mut self, hash: u64) -> Self {
-        self.schema_hash = hash;
+        if let Self::Complete { schema_hash, .. } = &mut self {
+            *schema_hash = hash;
+        }
         self
+    }
+
+    /// Check if this output is a suspension request.
+    pub fn is_suspended(&self) -> bool {
+        matches!(self, Self::Suspend { .. })
+    }
+
+    /// Check if this output is an error.
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::Error { .. })
+    }
+
+    /// Check if this output is a successful completion.
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete { .. })
     }
 
     /// Check if this output has an error message.
     pub fn has_error_message(&self) -> bool {
-        self.error_message.is_some()
+        matches!(self, Self::Error { message, .. } if !message.is_empty())
     }
 
     /// Get the error message, if any.
     pub fn get_error_message(&self) -> Option<&str> {
-        self.error_message.as_deref()
+        match self {
+            Self::Error { message, .. } if !message.is_empty() => Some(message),
+            _ => None,
+        }
+    }
+
+    /// Get the output port name.
+    ///
+    /// Returns the port for Complete variants, "error" for Error variants,
+    /// and None for Suspend variants.
+    pub fn port(&self) -> Option<&str> {
+        match self {
+            Self::Complete { port, .. } => Some(port),
+            Self::Error { .. } => Some("error"),
+            Self::Suspend { .. } => None,
+        }
+    }
+
+    /// Check if this output matches a specific port name.
+    ///
+    /// Returns `true` if this output has a port that matches the expected port.
+    /// Useful for checking if an edge should be activated.
+    pub fn matches_port(&self, expected_port: &str) -> bool {
+        self.port().map_or(false, |p| p == expected_port)
     }
 
     /// Get the arena location (offset and size) of the output data.
     ///
     /// Returns `(offset, size)` tuple for use in WAL records and crash recovery.
-    /// Returns `(ArenaOffset::NULL, 0)` if the data pointer is null.
+    /// Returns `(ArenaOffset::NULL, 0)` if the data pointer is null or for errors
+    /// without data.
     pub fn arena_location(&self) -> (crate::types::ArenaOffset, u32) {
-        (self.data.offset(), self.data.size())
+        match self {
+            Self::Complete { data, .. } => (data.offset(), data.size()),
+            Self::Error {
+                data: Some(ptr), ..
+            } => (ptr.offset(), ptr.size()),
+            Self::Error { data: None, .. } => (crate::types::ArenaOffset::NULL, 0),
+            Self::Suspend { pending_data, .. } => (pending_data.offset(), pending_data.size()),
+        }
+    }
+
+    /// Get the schema hash (only for Complete variant).
+    pub fn schema_hash(&self) -> u64 {
+        match self {
+            Self::Complete { schema_hash, .. } => *schema_hash,
+            _ => 0,
+        }
+    }
+
+    /// Get the data pointer (for Complete and some Error variants).
+    pub fn data(&self) -> RelPtr<()> {
+        match self {
+            Self::Complete { data, .. } => *data,
+            Self::Error {
+                data: Some(ptr), ..
+            } => *ptr,
+            Self::Error { data: None, .. } => RelPtr::null(),
+            Self::Suspend { pending_data, .. } => *pending_data,
+        }
     }
 }
 
