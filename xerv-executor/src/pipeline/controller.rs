@@ -344,6 +344,39 @@ impl Pipeline {
 
         Ok(trace_id)
     }
+
+    /// Resume a suspended trace.
+    ///
+    /// This is called when the external API receives a resume signal
+    /// for a trace that was suspended at a wait node.
+    pub async fn resume_suspended_trace(
+        &self,
+        hook_id: &str,
+        decision: crate::suspension::ResumeDecision,
+    ) -> Result<TraceId> {
+        let state = self.state.read().await;
+
+        // Check if pipeline is running
+        if *state != PipelineState::Running {
+            return Err(XervError::CircuitBreakerOpen {
+                pipeline_id: self.id.to_string(),
+                error_rate: 0.0,
+            });
+        }
+
+        drop(state);
+
+        tracing::info!(
+            pipeline_id = %self.id,
+            hook_id = %hook_id,
+            "Resuming suspended trace"
+        );
+
+        // Resume the trace through the executor
+        self.executor
+            .resume_suspended_trace(hook_id, decision)
+            .await
+    }
 }
 
 /// Builder for creating pipelines.
