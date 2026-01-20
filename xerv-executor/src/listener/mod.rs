@@ -60,6 +60,8 @@ pub struct ListenerPool {
     listeners: Arc<RwLock<HashMap<String, Vec<ListenerEntry>>>>,
     /// Running state.
     running: RwLock<bool>,
+    /// Task handles for graceful shutdown.
+    task_handles: RwLock<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 /// Internal listener entry that can be cloned for broadcasting.
@@ -75,6 +77,7 @@ impl ListenerPool {
             triggers: RwLock::new(HashMap::new()),
             listeners: Arc::new(RwLock::new(HashMap::new())),
             running: RwLock::new(false),
+            task_handles: RwLock::new(Vec::new()),
         }
     }
 
@@ -186,33 +189,43 @@ impl ListenerPool {
             .collect();
 
         for (trigger_id, trigger) in triggers {
+            // Check if stop() was called during iteration
+            if !*self.running.read() {
+                break;
+            }
+
             let listeners = Arc::clone(&self.listeners);
             let tid = trigger_id.clone();
 
             // Create the broadcast callback
             let callback = move |event: TriggerEvent| {
-                let listeners_guard = listeners.read();
-                if let Some(listener_list) = listeners_guard.get(&tid) {
-                    for entry in listener_list {
-                        // Create a new event with a unique trace ID for each listener
-                        let listener_event = TriggerEvent {
-                            trigger_id: event.trigger_id.clone(),
-                            trace_id: TraceId::new(),
-                            data: event.data,
-                            schema_hash: event.schema_hash,
-                            timestamp_ns: event.timestamp_ns,
-                            metadata: event.metadata.clone(),
-                        };
+                // Clone callbacks while holding the lock, then release before invoking
+                let callbacks: Vec<_> = {
+                    let listeners_guard = listeners.read();
+                    listeners_guard
+                        .get(&tid)
+                        .map(|list| list.iter().map(|e| Arc::clone(&e.callback)).collect())
+                        .unwrap_or_default()
+                };
 
-                        (entry.callback)(listener_event);
-                    }
+                // Invoke callbacks without holding the lock
+                for callback in callbacks {
+                    let listener_event = TriggerEvent {
+                        trigger_id: event.trigger_id.clone(),
+                        trace_id: TraceId::new(),
+                        data: event.data,
+                        schema_hash: event.schema_hash,
+                        timestamp_ns: event.timestamp_ns,
+                        metadata: event.metadata.clone(),
+                    };
+                    callback(listener_event);
                 }
             };
 
             // Start the trigger with the broadcast callback
             let trigger_clone = Arc::clone(&trigger);
             let tid_log = trigger_id.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 if let Err(e) = trigger_clone.start(Box::new(callback)).await {
                     tracing::error!(
                         trigger_id = %tid_log,
@@ -221,6 +234,9 @@ impl ListenerPool {
                     );
                 }
             });
+
+            // Track handle for graceful shutdown
+            self.task_handles.write().push(handle);
 
             tracing::info!(trigger_id = %trigger_id, "Trigger started");
         }
@@ -254,6 +270,12 @@ impl ListenerPool {
                 );
             }
             tracing::info!(trigger_id = %trigger_id, "Trigger stopped");
+        }
+
+        // Abort all task handles
+        let handles: Vec<_> = self.task_handles.write().drain(..).collect();
+        for handle in handles {
+            handle.abort();
         }
 
         Ok(())

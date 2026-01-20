@@ -364,6 +364,10 @@ impl Executor {
                         "Node failed"
                     );
 
+                    // Remove trace from active set before returning error
+                    drop(trace);
+                    self.traces.remove(&trace_id);
+
                     return Err(XervError::NodeExecution {
                         node_id,
                         trace_id,
@@ -386,6 +390,10 @@ impl Executor {
                         timeout_event = timeout_event.with_pipeline_id(pid);
                     }
                     self.log_collector.collect(timeout_event);
+
+                    // Remove trace from active set before returning error
+                    drop(trace);
+                    self.traces.remove(&trace_id);
 
                     return Err(XervError::NodeTimeout {
                         node_id,
@@ -410,8 +418,12 @@ impl Executor {
 
         tracing::info!(trace_id = %trace_id, "Trace completed");
 
-        // Remove trace from active set
-        self.traces.remove(&trace_id);
+        // Remove trace from active set and cleanup arena file
+        if let Some((_, trace_state)) = self.traces.remove(&trace_id) {
+            if let Err(e) = trace_state.cleanup() {
+                tracing::warn!(trace_id = %trace_id, error = %e, "Failed to cleanup arena file");
+            }
+        }
 
         Ok(())
     }
@@ -427,13 +439,35 @@ impl Executor {
     }
 
     /// Shutdown the executor.
+    ///
+    /// This will:
+    /// 1. Notify all nodes of shutdown
+    /// 2. Cleanup all active traces and their arena files
     pub async fn shutdown(&self) {
         // Notify all nodes of shutdown
         for node in self.nodes.values() {
             node.shutdown();
         }
 
-        tracing::info!("Executor shutdown complete");
+        // Cleanup all active traces
+        let trace_ids: Vec<TraceId> = self.traces.iter().map(|r| *r.key()).collect();
+        let trace_count = trace_ids.len();
+        for trace_id in trace_ids {
+            if let Some((_, trace_state)) = self.traces.remove(&trace_id) {
+                if let Err(e) = trace_state.cleanup() {
+                    tracing::warn!(
+                        trace_id = %trace_id,
+                        error = %e,
+                        "Failed to cleanup trace during shutdown"
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            "Executor shutdown complete, cleaned up {} traces",
+            trace_count
+        );
     }
 }
 

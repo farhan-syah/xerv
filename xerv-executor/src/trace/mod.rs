@@ -240,6 +240,14 @@ impl TraceState {
             self.outputs.remove(&node_id);
         }
     }
+
+    /// Cleanup and delete the arena file.
+    ///
+    /// This consumes the TraceState and deletes the arena file from disk.
+    /// Should be called when a trace completes successfully.
+    pub fn cleanup(self) -> xerv_core::error::Result<()> {
+        self.arena.delete()
+    }
 }
 
 #[cfg(test)]
