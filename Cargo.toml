@@ -1,0 +1,71 @@
+[workspace]
+members = ["xerv-core", "xerv-macros", "xerv-nodes", "xerv-cli", "xerv-executor"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Farhan Syah"]
+license = "Apache-2.0"
+repository = "https://github.com/ml-rust/xerv"
+homepage = "https://github.com/ml-rust/xerv"
+documentation = "https://docs.rs/xerv-core"
+readme = "README.md"
+description = "Workflow orchestration engine with DAG scheduling, YAML pipelines, and crash recovery"
+keywords = ["workflow", "orchestration", "pipeline", "dag", "scheduler"]
+categories = ["asynchronous", "development-tools", "command-line-utilities"]
+
+[workspace.dependencies]
+# Core Serialization & Memory-Efficient Storage
+rkyv = "0.8"
+rkyv_derive = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Async Runtime
+tokio = { version = "1.49", features = ["full"] }
+
+# Runtime & Plugins
+wasmtime = "40.0"
+
+# Utilities
+uuid = { version = "1.19", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Concurrency
+dashmap = "6.0"
+parking_lot = "0.12"
+
+# Regex & Pattern Matching
+regex = "1.10"
+
+# Time & Scheduling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+log = "0.4"
+
+# CLI Framework
+clap = { version = "4.5", features = ["derive"] }
+
+# HTTP/Web
+hyper = { version = "1", features = ["full"] }
+http = "1.1"
+
+# JSON (for dynamic data handling)
+serde_json = "1.0"
+
+# Cron scheduling
+cron = "0.15"
+
+# Filesystem watching
+notify = { version = "8.0", default-features = false, features = ["macos_fsevent"] }
+
+# HTTP utilities
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+bytes = "1.10"

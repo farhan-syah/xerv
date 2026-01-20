@@ -1,0 +1,50 @@
+[package]
+name = "xerv-executor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "XERV orchestration executor: DAG scheduler, selector linker, pipeline controller, and REST API"
+keywords = ["orchestration", "scheduler", "executor", "async", "workflow"]
+categories = ["asynchronous", "command-line-utilities"]
+readme = "../README.md"
+rust-version = "1.85"
+
+[features]
+default = []
+wasm = ["dep:wasmtime"]
+
+[dependencies]
+xerv-core = { version = "0.1.0", path = "../xerv-core" }
+
+# Workspace dependencies
+tokio.workspace = true
+rkyv.workspace = true
+rkyv_derive.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+chrono.workspace = true
+
+# HTTP server dependencies
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+urlencoding = "2.1"
+
+# Optional dependencies
+wasmtime = { workspace = true, optional = true }
+
+[dev-dependencies]
+wat = "1.225"
+

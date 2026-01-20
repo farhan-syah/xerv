@@ -1,0 +1,22 @@
+[package]
+name = "xerv-macros"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Procedural macros for XERV: #[xerv::node] and #[xerv::schema] for workflow pipelines"
+keywords = ["workflow", "macros", "derive", "schema", "pipeline"]
+categories = ["development-tools::procedural-macro-helpers"]
+readme = "../README.md"
+rust-version = "1.85"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }

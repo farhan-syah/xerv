@@ -1,0 +1,48 @@
+[package]
+name = "xerv-nodes"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Standard workflow nodes for XERV: merge, split, switch, loop, map, and transform operations"
+keywords = ["workflow", "nodes", "pipeline", "merge", "transform"]
+categories = ["asynchronous", "data-structures"]
+readme = "../README.md"
+rust-version = "1.85"
+
+[features]
+default = []
+kafka = ["rdkafka", "futures"]
+
+[dependencies]
+xerv-core = { version = "0.1.0", path = "../xerv-core" }
+
+# Workspace dependencies
+serde.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+regex.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+
+# Trigger dependencies
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+http.workspace = true
+bytes.workspace = true
+cron.workspace = true
+notify.workspace = true
+parking_lot.workspace = true
+
+# Kafka dependencies (optional)
+rdkafka = { version = "0.36", features = ["cmake-build", "tokio"], optional = true }
+futures = { version = "0.3", optional = true }
+

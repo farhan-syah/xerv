@@ -1,0 +1,97 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# XERV Runtime
+/tmp/xerv*/
+/tmp/xerv_*
+*.bin
+*.wal
+
+# Development & Testing
+/debug/
+/dist/
+*.o
+*.so
+*.dylib
+
+# Python (for future PyO3 bindings)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+*.log
+logs/
+
+# Local configuration
+.env
+.env.local
+secrets/
+config.local.yaml
+resources
+CLAUDE.md
+AGENTS.md
+
+# Test coverage
+/coverage/
+*.profraw
+*.profdata
+/tarpaulin-report.html
+
+# Generated files
+generated/
+proto/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Project-specific (XERV traces)
+traces/
+checkpoints/
+*.trace
+*.checkpoint
+
+# Backup files
+*.bak
+*.backup
+*_old
+
+# Build artifacts from CI
+dist/
+build/

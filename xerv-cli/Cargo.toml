@@ -1,0 +1,44 @@
+[package]
+name = "xerv-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Command-line tool for XERV orchestration: deploy flows, develop locally, inspect traces, and benchmark"
+keywords = ["workflow", "cli", "orchestration", "pipeline", "deploy"]
+categories = ["command-line-utilities"]
+readme = "../README.md"
+rust-version = "1.85"
+
+[dependencies]
+xerv-core = { version = "0.1.0", path = "../xerv-core" }
+xerv-nodes = { version = "0.1.0", path = "../xerv-nodes" }
+xerv-executor = { version = "0.1.0", path = "../xerv-executor" }
+
+# Workspace dependencies
+tokio.workspace = true
+clap.workspace = true
+serde_yaml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+log.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+
+# HTTP server
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+http.workspace = true
+bytes.workspace = true
+
+# File watching
+notify.workspace = true
+
+# Concurrency
+parking_lot.workspace = true
+

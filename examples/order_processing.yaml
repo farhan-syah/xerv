@@ -1,0 +1,104 @@
+# Order Processing Flow
+# This example flow demonstrates XERV's YAML specification.
+# It processes incoming orders with fraud detection and routing.
+
+name: order_processing
+version: "1.0"
+description: Process incoming orders with fraud detection
+
+# Triggers define entry points for the flow
+triggers:
+  - id: api_webhook
+    type: webhook
+    description: HTTP endpoint for order submission
+    params:
+      host: "0.0.0.0"
+      port: 8080
+      path: /api/orders
+      method: POST
+
+  - id: batch_cron
+    type: cron
+    description: Hourly batch processing
+    params:
+      schedule: "0 0 * * * *"  # Every hour
+
+# Nodes define the processing steps
+nodes:
+  validate_order:
+    type: std::log
+    description: Validate order structure and data
+    config:
+      message: "Validating order..."
+
+  fraud_check:
+    type: std::switch
+    description: Route based on fraud risk score
+    config:
+      condition:
+        type: greater_than
+        field: risk_score
+        value: 0.8
+
+  process_normal:
+    type: std::log
+    description: Process normal orders
+    config:
+      message: "Processing normal order"
+
+  flag_suspicious:
+    type: std::log
+    description: Flag suspicious orders for review
+    config:
+      message: "Flagging suspicious order"
+
+  notify_complete:
+    type: std::merge
+    description: Wait for all processing paths
+    config:
+      strategy: all
+
+  final_log:
+    type: std::log
+    description: Final logging
+    config:
+      message: "Order processing complete"
+
+# Edges define the flow connections
+edges:
+  # Main API flow
+  - from: api_webhook
+    to: validate_order
+
+  - from: validate_order
+    to: fraud_check
+
+  # Fraud check routing
+  - from: fraud_check.false
+    to: process_normal
+    description: "Normal orders"
+
+  - from: fraud_check.true
+    to: flag_suspicious
+    description: "Suspicious orders"
+
+  # Merge paths
+  - from: process_normal
+    to: notify_complete
+
+  - from: flag_suspicious
+    to: notify_complete
+
+  - from: notify_complete
+    to: final_log
+
+  # Batch flow (separate path)
+  - from: batch_cron
+    to: validate_order
+
+# Runtime settings
+settings:
+  max_concurrent_executions: 100
+  execution_timeout_ms: 30000
+  circuit_breaker_threshold: 0.05
+  debug: false
