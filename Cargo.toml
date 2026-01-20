@@ -1,5 +1,5 @@
 [workspace]
-members = ["xerv-core", "xerv-macros", "xerv-nodes", "xerv-cli", "xerv-executor", "xerv-cluster"]
+members = ["xerv-core", "xerv-macros", "xerv-nodes", "xerv-cli", "xerv-executor", "xerv-cluster", "xerv-operator"]
 resolver = "2"
 
 [workspace.package]
