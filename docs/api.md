@@ -24,6 +24,7 @@ async fn main() -> Result<()> {
 ```
 
 Or via CLI:
+
 ```bash
 xerv-cli serve --host 127.0.0.1 --port 8080
 ```
@@ -37,6 +38,7 @@ GET /health
 ```
 
 **Response (200 OK):**
+
 ```json
 {
   "status": "healthy",
@@ -53,6 +55,7 @@ GET /pipelines
 ```
 
 **Response (200 OK):**
+
 ```json
 {
   "pipelines": [
@@ -73,6 +76,7 @@ GET /pipelines/{pipeline_id}
 ```
 
 **Response (200 OK):**
+
 ```json
 {
   "id": "order-processing",
@@ -98,12 +102,14 @@ GET /traces
 ```
 
 **Query Parameters:**
+
 - `pipeline_id` (optional) - Filter by pipeline
 - `status` (optional) - Filter by status (running, completed, failed)
 - `limit` (optional, default: 100) - Maximum results
 - `offset` (optional, default: 0) - Pagination offset
 
 **Response (200 OK):**
+
 ```json
 {
   "traces": [
@@ -130,6 +136,7 @@ GET /traces/{trace_id}
 ```
 
 **Response (200 OK):**
+
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -165,10 +172,12 @@ GET /traces/{trace_id}/logs
 ```
 
 **Query Parameters:**
+
 - `level` (optional) - Filter by level (debug, info, warn, error)
 - `node_id` (optional) - Filter by node
 
 **Response (200 OK):**
+
 ```json
 {
   "logs": [
@@ -199,10 +208,12 @@ GET /suspensions
 ```
 
 **Query Parameters:**
+
 - `reason` (optional) - Filter by suspension reason
 - `limit` (optional, default: 100) - Maximum results
 
 **Response (200 OK):**
+
 ```json
 {
   "suspended_traces": [
@@ -227,6 +238,7 @@ POST /suspensions/{trace_id}/resume
 ```
 
 **Request Body:**
+
 ```json
 {
   "decision": "approve",
@@ -238,6 +250,7 @@ POST /suspensions/{trace_id}/resume
 ```
 
 **Response (200 OK):**
+
 ```json
 {
   "trace_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -255,6 +268,7 @@ GET /triggers
 ```
 
 **Response (200 OK):**
+
 ```json
 {
   "triggers": [
@@ -284,6 +298,7 @@ POST /triggers/{trigger_id}/fire
 ```
 
 **Request Body (optional):**
+
 ```json
 {
   "payload": {
@@ -294,6 +309,7 @@ POST /triggers/{trigger_id}/fire
 ```
 
 **Response (200 OK):**
+
 ```json
 {
   "trace_id": "550e8400-e29b-41d4-a716-446655440001",
@@ -317,15 +333,16 @@ All error responses follow this format:
 
 ### Common Error Codes
 
-| Code | HTTP Status | Description |
-|------|------------|-------------|
-| `pipeline_not_found` | 404 | Pipeline does not exist |
-| `trace_not_found` | 404 | Trace does not exist |
-| `invalid_payload` | 400 | Request body is malformed |
-| `execution_failed` | 500 | Trace execution failed |
-| `suspended_trace` | 409 | Trace is suspended and cannot execute |
+| Code                 | HTTP Status | Description                           |
+| -------------------- | ----------- | ------------------------------------- |
+| `pipeline_not_found` | 404         | Pipeline does not exist               |
+| `trace_not_found`    | 404         | Trace does not exist                  |
+| `invalid_payload`    | 400         | Request body is malformed             |
+| `execution_failed`   | 500         | Trace execution failed                |
+| `suspended_trace`    | 409         | Trace is suspended and cannot execute |
 
 **Example Error Response:**
+
 ```json
 {
   "error": "pipeline_not_found",
@@ -347,6 +364,7 @@ GET /traces/{trace_id}/logs/stream
 ```
 
 **Response:** Streaming JSON objects, one per line
+
 ```
 {"timestamp": "...", "level": "info", "message": "..."}
 {"timestamp": "...", "level": "info", "message": "..."}
@@ -369,13 +387,130 @@ let config = ServerConfig {
 
 ## Authentication
 
-Currently, XERV does not provide built-in authentication. Recommendations:
+XERV provides built-in API key authentication with scope-based authorization.
 
-1. **Run behind a proxy** (nginx, Caddy) with auth middleware
-2. **Use network segmentation** to restrict API access
-3. **Implement custom authentication** in your application layer
+### Configuration
 
-Future versions will support JWT and API key authentication.
+```rust
+use xerv_core::auth::{AuthConfig, ApiKeyConfig, ApiKeyBuilder, AuthScope};
+
+let auth_config = AuthConfig::new()
+    .enabled()
+    .with_api_key(
+        ApiKeyConfig::new()
+            .with_header("X-API-Key")  // default header name
+            .with_key(
+                ApiKeyBuilder::new("service-a")
+                    .with_scope(AuthScope::PipelineRead)
+                    .with_scope(AuthScope::TraceRead)
+                    .expires_in_days(90)  // expires in 90 days
+                    .build_with_key("your-secret-api-key")
+            )
+            .with_key(
+                ApiKeyBuilder::new("admin-user")
+                    .admin()  // grants all scopes
+                    .expires_in_days(30)  // shorter expiry for admin keys
+                    .build_with_key("admin-secret-key")
+            )
+            .with_key(
+                ApiKeyBuilder::new("ci-pipeline")
+                    .operator()
+                    // No expiration - use for long-lived service accounts
+                    .build_with_key("ci-key")
+            )
+    )
+    .with_exempt_path("/health")
+    .with_exempt_path("/metrics");
+```
+
+### Key Expiration
+
+API keys can be configured with optional expiration:
+
+```rust
+// Expires in 30 days
+ApiKeyBuilder::new("temp-key")
+    .expires_in_days(30)
+    .build_with_key("...")
+
+// Expires in 1 hour (3600 seconds)
+ApiKeyBuilder::new("short-lived")
+    .expires_in(3600)
+    .build_with_key("...")
+
+// Expires at specific Unix timestamp
+ApiKeyBuilder::new("scheduled")
+    .expires_at(1735689600)  // Jan 1, 2025
+    .build_with_key("...")
+
+// No expiration (default)
+ApiKeyBuilder::new("permanent")
+    .build_with_key("...")
+```
+
+Expired keys return a `401 Unauthorized` error.
+
+### Authorization Scopes
+
+| Scope           | Description                         |
+| --------------- | ----------------------------------- |
+| `PipelineRead`  | Read pipeline information           |
+| `PipelineWrite` | Create, modify, or delete pipelines |
+| `TraceRead`     | Read trace information              |
+| `TraceWrite`    | Create or modify traces             |
+| `TraceResume`   | Resume suspended traces             |
+| `Admin`         | Full access (includes all scopes)   |
+
+### Preset Scope Sets
+
+- **`read_only()`** - `PipelineRead`, `TraceRead`
+- **`operator()`** - `PipelineRead`, `TraceRead`, `TraceResume`
+- **`admin()` / `all()`** - All scopes
+
+### Making Authenticated Requests
+
+```bash
+# Include API key in header
+curl -H "X-API-Key: your-secret-api-key" http://localhost:8080/pipelines
+```
+
+### Path Exemptions
+
+By default, `/health` is exempt from authentication. Add more exempt paths:
+
+```rust
+let config = AuthConfig::new()
+    .enabled()
+    .with_exempt_path("/health")
+    .with_exempt_path("/metrics")
+    .with_exempt_path("/status");
+```
+
+### Error Responses
+
+**401 Unauthorized** - Missing or invalid API key:
+
+```json
+{
+  "error": "authentication_failed",
+  "message": "Invalid API key"
+}
+```
+
+**403 Forbidden** - Valid key but insufficient scopes:
+
+```json
+{
+  "error": "authorization_denied",
+  "message": "Identity 'service-a' does not have scope 'pipeline:write'"
+}
+```
+
+### Security Notes
+
+- API keys are stored as SHA-256 hashes (never plaintext)
+- Identity is tracked for audit logging
+- Use TLS in production to protect keys in transit
 
 ## Examples
 

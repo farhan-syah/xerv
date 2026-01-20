@@ -309,6 +309,13 @@ This enables **fault-tolerant** trace execution.
 - **Write-Ahead Log (WAL)** - Node completions recorded before execution continues
 - **Crash Recovery** - Automatic replay of incomplete nodes after failure
 - **Idempotent Execution** - Safe to retry traces without duplicating side effects
+- **Circuit Breaker** - Automatic pipeline pausing on high error rates
+
+### High Availability (New)
+- **Distributed Clustering** - Multi-node coordination via OpenRaft Raft consensus
+- **Leader Election** - Automatic failover when leader node fails
+- **State Replication** - Consistent trace state across cluster nodes
+- **gRPC Network Transport** - Efficient inter-node communication
 
 ### Human-in-the-Loop
 - **Suspension System** - Pause traces pending external approval or decision
@@ -325,7 +332,8 @@ This enables **fault-tolerant** trace execution.
 - **REST API** - Full pipeline lifecycle and trace management
 - **Metrics Collection** - Execution statistics and performance data
 - **Logging & Tracing** - Structured logs with trace ID correlation
-- **Hot Reload** - Update flows without restarting the executor
+- **Resource Cleanup** - Automatic cleanup of timed-out traces, WAL segments, and arena files
+- **Graceful Shutdown** - Clean termination of in-flight traces and listeners
 
 ## Documentation
 
@@ -345,6 +353,7 @@ xerv/
 ├── xerv-core/      # Arena, WAL, core traits (Node, Schema, Context)
 ├── xerv-nodes/     # Standard library (merge, split, switch, loop)
 ├── xerv-executor/  # Scheduler, linker, pipeline controller, REST API
+├── xerv-cluster/   # Distributed clustering with OpenRaft consensus
 ├── xerv-cli/       # CLI binary (deploy, dev, inspect, bench)
 └── xerv-macros/    # Procedural macros (#[xerv::node], #[xerv::schema])
 ```

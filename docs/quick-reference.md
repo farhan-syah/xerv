@@ -244,6 +244,45 @@ rm -rf /var/lib/xerv/trace_*.bin
 
 ## Common Configurations
 
+### Circuit Breaker Configuration
+
+```rust
+use xerv_executor::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+
+let circuit_breaker = CircuitBreaker::new(CircuitBreakerConfig {
+    failure_threshold: 5,          // Open after 5 failures
+    failure_window_secs: 60,       // Within 60 seconds
+    recovery_timeout_secs: 30,     // Wait 30s before retry
+    success_threshold: 3,          // Close after 3 successes
+});
+
+// Check before executing trace
+if !circuit_breaker.allow_request() {
+    // Circuit is open, reject trace
+    return Err(XervError::CircuitOpen);
+}
+```
+
+### Cluster Configuration
+
+```rust
+use xerv_cluster::{ClusterConfig, ClusterNode};
+
+let config = ClusterConfig::builder()
+    .node_id(1)
+    .listen_addr("127.0.0.1:5000")
+    .peers(vec![
+        (2, "127.0.0.1:5001".to_string()),
+        (3, "127.0.0.1:5002".to_string()),
+    ])
+    .data_dir("/var/lib/xerv/raft")
+    .heartbeat_interval_ms(500)
+    .election_timeout_ms(1500)
+    .build();
+
+let node = ClusterNode::start(config).await?;
+```
+
 ### Local Development
 
 ```rust

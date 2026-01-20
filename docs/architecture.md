@@ -4,15 +4,24 @@ This document explains how XERV executes traces with efficient memory usage, cra
 
 ## System Overview
 
-XERV has three layers:
+XERV has three layers, with optional distributed clustering:
 
 ```mermaid
 graph TB
+    subgraph Cluster["CLUSTER PLANE (Optional)"]
+        subgraph Raft["Raft Consensus"]
+            R1["Leader election and failover"]
+            R2["State replication via OpenRaft"]
+            R3["gRPC network transport"]
+        end
+    end
+
     subgraph CP["CONTROL PLANE"]
         subgraph PipCon["Pipeline Controller"]
             PC1["Start/pause/stop/drain lifecycle"]
             PC2["Listener pool<br/>(webhooks, cron, fs watches)"]
             PC3["Trace queue management"]
+            PC4["Circuit breaker<br/>(error rate management)"]
         end
     end
 
@@ -35,13 +44,16 @@ graph TB
             A1["Rkyv-serialized data entries"]
             A2["Relative pointers (RelPtr&lt;T&gt;)<br/>for efficient access"]
             A3["One arena per trace<br/>(persistent across restarts)"]
+            A4["Automatic cleanup of completed traces"]
         end
         subgraph WAL["Write-Ahead Log (WAL)"]
             W1["Records node completions"]
             W2["Enables crash recovery and replay"]
+            W3["Automatic segment purging"]
         end
     end
 
+    Cluster <--> CP
     CP <--> EP
     EP <--> DP
 ```
@@ -657,6 +669,101 @@ sequenceDiagram
 - **Write-ahead log** - node completions recorded before continuing execution
 - **Crash recovery** - replay incomplete nodes from previous execution state
 - **Persistent offsets** - RelPtr survives process restarts
+
+### Resource Management
+
+- **Automatic cleanup** - timed-out traces, completed arena files, WAL segments
+- **Graceful shutdown** - in-flight traces complete before termination
+- **Circuit breaker** - prevents cascading failures during high error rates
+- **Bounded memory** - log subscribers and suspension state are properly cleaned
+
+## Reliability Features
+
+### Circuit Breaker
+
+The circuit breaker protects pipelines from cascading failures:
+
+```rust
+pub struct CircuitBreakerConfig {
+    pub failure_threshold: u32,        // Failures before opening (default: 5)
+    pub failure_window_secs: u64,      // Time window for counting (default: 60)
+    pub recovery_timeout_secs: u64,    // Wait before retry (default: 30)
+    pub success_threshold: u32,        // Successes to close circuit (default: 3)
+}
+```
+
+**States:**
+- **Closed** - Normal operation, all requests allowed
+- **Open** - Circuit tripped, requests rejected immediately
+- **HalfOpen** - Testing recovery, limited requests allowed
+
+**Operation:**
+1. Pipeline tracks failures within sliding window
+2. When threshold exceeded, circuit opens (rejects all traces)
+3. After recovery timeout, enters half-open state
+4. If next N requests succeed, circuit closes
+5. If any fail in half-open, returns to open state
+
+### Distributed Clustering (xerv-cluster)
+
+For high availability and horizontal scaling, XERV supports multi-node deployment:
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    XERV Cluster                             │
+│                                                             │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐       │
+│  │   Node 1    │   │   Node 2    │   │   Node 3    │       │
+│  │  (Leader)   │   │ (Follower)  │   │ (Follower)  │       │
+│  │             │   │             │   │             │       │
+│  │ ┌─────────┐ │   │ ┌─────────┐ │   │ ┌─────────┐ │       │
+│  │ │  Raft   │◄┼───┼─┤  Raft   │◄┼───┼─┤  Raft   │ │       │
+│  │ │ Engine  │ │   │ │ Engine  │ │   │ │ Engine  │ │       │
+│  │ └────┬────┘ │   │ └────┬────┘ │   │ └────┬────┘ │       │
+│  │      │      │   │      │      │   │      │      │       │
+│  │ ┌────▼────┐ │   │ ┌────▼────┐ │   │ ┌────▼────┐ │       │
+│  │ │  State  │ │   │ │  State  │ │   │ │  State  │ │       │
+│  │ │ Machine │ │   │ │ Machine │ │   │ │ Machine │ │       │
+│  │ └─────────┘ │   │ └─────────┘ │   │ └─────────┘ │       │
+│  └─────────────┘   └─────────────┘   └─────────────┘       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Features:**
+- **Raft Consensus** - Leader election and log replication via OpenRaft
+- **Automatic Failover** - New leader elected if current leader fails
+- **State Replication** - Trace execution state replicated across nodes
+- **gRPC Transport** - Efficient inter-node communication
+- **Membership Management** - Dynamic adding/removing of cluster nodes
+
+**Usage:**
+```rust
+use xerv_cluster::{ClusterConfig, ClusterNode};
+
+// Configure the cluster
+let config = ClusterConfig::builder()
+    .node_id(1)
+    .listen_addr("127.0.0.1:5000")
+    .peers(vec![
+        (2, "127.0.0.1:5001".to_string()),
+        (3, "127.0.0.1:5002".to_string()),
+    ])
+    .build();
+
+// Start the node
+let node = ClusterNode::start(config).await?;
+
+// Commands are automatically routed to the leader
+node.execute(ClusterCommand::StartTrace { ... }).await?;
+```
+
+**When to Use Clustering:**
+- **High availability** - Survive node failures without downtime
+- **Horizontal scaling** - Distribute trace execution across multiple nodes
+- **Geographic distribution** - Place nodes closer to data sources
+- **Load balancing** - Leader distributes work to followers
 
 ## Advanced Topics
 
