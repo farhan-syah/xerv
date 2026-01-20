@@ -207,72 +207,50 @@ impl Node for WaitNode {
                 }
             };
 
-            // Extract metadata
-            let metadata = self.extract_metadata(&value);
+            // Extract metadata from input for approval UI
+            let node_metadata = self.extract_metadata(&value);
 
-            // In a full implementation, this would:
-            // 1. Flush the arena to disk
-            // 2. Write trace_id + hook_id to persistence store
-            // 3. Send notification (email, Slack, etc.) with approval links
-            // 4. Return a "waiting" status to the executor
-            // 5. The executor would unload the trace from memory
-            //
-            // Resumption would be handled by:
-            // 1. External webhook/API call with hook_id
-            // 2. Executor loads arena back from disk
-            // 3. Replays from WAL to get to this node
-            // 4. Continues execution based on approval decision
+            // Build metadata JSON for the suspension request
+            let metadata = serde_json::json!({
+                "hook_id": self.hook_id,
+                "trace_id": ctx.trace_id().to_string(),
+                "node_metadata": node_metadata,
+                "resume_url": format!("/api/v1/resume/{}", self.hook_id),
+                "persistence": format!("{:?}", self.persistence),
+            });
+
+            // Build suspension request
+            let mut request = xerv_core::suspension::SuspensionRequest::new(&self.hook_id)
+                .with_metadata(metadata);
+
+            // Apply timeout if configured
+            if let ResumeMethod::Timeout {
+                seconds,
+                on_timeout,
+            } = &self.resume_method
+            {
+                let action = match on_timeout {
+                    TimeoutAction::Approve => xerv_core::suspension::TimeoutAction::Approve,
+                    TimeoutAction::Reject => xerv_core::suspension::TimeoutAction::Reject,
+                    TimeoutAction::Escalate => xerv_core::suspension::TimeoutAction::Escalate,
+                };
+                request = request.with_timeout(*seconds, action);
+            }
 
             tracing::info!(
                 hook_id = %self.hook_id,
                 trace_id = %ctx.trace_id(),
                 persistence = ?self.persistence,
                 resume_method = ?self.resume_method,
-                metadata = ?metadata,
-                "Wait: pausing for approval"
+                "Wait: requesting suspension for human-in-the-loop approval"
             );
 
-            // For now, we simulate immediate approval for testing
-            // In production, this would return a "waiting" signal
-            // that the executor handles specially.
-            //
-            // The wait node output includes:
-            // - Original input data
-            // - Wait state information
-            // - Metadata for the approval UI
-            let wait_state = Value::from(serde_json::json!({
-                "hook_id": self.hook_id,
-                "trace_id": ctx.trace_id().to_string(),
-                "status": "waiting",
-                "metadata": metadata,
-                "resume_url": format!("/api/v1/resume/{}", self.hook_id)
-            }));
-
-            // Write wait state to arena
-            let state_bytes = match wait_state.to_bytes() {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    return Ok(NodeOutput::error_with_message(format!(
-                        "Failed to serialize wait state: {}",
-                        e
-                    )));
-                }
-            };
-
-            let state_ptr = match ctx.write_bytes(&state_bytes) {
-                Ok(ptr) => ptr,
-                Err(e) => {
-                    return Ok(NodeOutput::error_with_message(format!(
-                        "Failed to write wait state: {}",
-                        e
-                    )));
-                }
-            };
-
-            // In a real implementation, we would return a special "waiting" output
-            // that tells the executor to suspend this trace.
-            // For now, we emit on "out" to simulate immediate approval.
-            Ok(NodeOutput::out(state_ptr))
+            // Return suspension signal - the executor will:
+            // 1. Flush the arena to disk
+            // 2. Store the trace state in the suspension store
+            // 3. Remove the trace from active memory
+            // 4. Wait for external resume via API
+            Ok(NodeOutput::suspend(request, input))
         })
     }
 }
