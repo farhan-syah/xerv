@@ -78,26 +78,53 @@ pub async fn resume(
     let output_port = decision.output_port().to_string();
     let decision_str = body.decision.to_lowercase();
 
-    // Resume the trace
-    match state.suspension_store.resume(hook_id, decision) {
-        Ok(suspended_state) => {
+    // First, get the suspended state to find the pipeline ID
+    let suspended_state = match state.suspension_store.get(hook_id) {
+        Ok(s) => s,
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+
+    let pipeline_id = suspended_state.pipeline_id.clone();
+    let trace_id = suspended_state.trace_id;
+
+    // Get the pipeline that owns this trace
+    let pipeline = match state.controller.get(&pipeline_id) {
+        Some(p) => p,
+        None => {
+            return ApiError::not_found("E501", format!("Pipeline '{}' not found", pipeline_id))
+                .into_response();
+        }
+    };
+
+    // Resume the trace through the pipeline (which calls executor.resume_suspended_trace)
+    match pipeline.resume_suspended_trace(hook_id, decision).await {
+        Ok(resumed_trace_id) => {
             tracing::info!(
                 hook_id = %hook_id,
-                trace_id = %suspended_state.trace_id,
+                trace_id = %resumed_trace_id,
+                pipeline_id = %pipeline_id,
                 decision = %decision_str,
-                "Trace resumed via API"
+                "Trace resumed and execution continued"
             );
 
             let resp = ResumeResponse {
                 hook_id: hook_id.to_string(),
-                trace_id: suspended_state.trace_id.to_string(),
+                trace_id: resumed_trace_id.to_string(),
                 decision: decision_str,
                 output_port,
             };
 
             response::ok(&resp)
         }
-        Err(e) => ApiError::from(e).into_response(),
+        Err(e) => {
+            tracing::error!(
+                hook_id = %hook_id,
+                trace_id = %trace_id,
+                error = %e,
+                "Failed to resume trace"
+            );
+            ApiError::from(e).into_response()
+        }
     }
 }
 
