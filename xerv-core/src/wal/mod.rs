@@ -30,4 +30,7 @@ pub use snapshot::{
     SnapshotConfig, SnapshotNodeOutput, SnapshotTraceState, WalPosition, WalSnapshot,
 };
 pub use snapshot_manager::SnapshotManager;
-pub use writer::{NodeOutputLocation, TraceRecoveryState, Wal, WalConfig, WalReader};
+pub use writer::{
+    GroupCommitConfig, GroupCommitStats, NodeOutputLocation, TraceRecoveryState, Wal, WalConfig,
+    WalReader,
+};
