@@ -53,9 +53,11 @@ mod settings;
 mod trigger;
 mod validation;
 
-pub use definition::FlowDefinition;
+pub use definition::{FlowDefinition, FlowLoadError};
 pub use edge::EdgeDefinition;
 pub use node::NodeDefinition;
 pub use settings::FlowSettings;
 pub use trigger::TriggerDefinition;
-pub use validation::{ValidationError, ValidationResult};
+pub use validation::{
+    FlowValidator, ValidationError, ValidationErrorKind, ValidationLimits, ValidationResult,
+};

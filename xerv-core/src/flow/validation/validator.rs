@@ -1,128 +1,41 @@
-//! Flow validation.
+//! Flow validation logic.
 
-use super::{FlowDefinition, NodeDefinition, TriggerDefinition};
 use std::collections::HashSet;
 
-/// Result of flow validation.
-pub type ValidationResult = Result<(), Vec<ValidationError>>;
-
-/// A validation error.
-#[derive(Debug, Clone)]
-pub struct ValidationError {
-    /// The type of error.
-    pub kind: ValidationErrorKind,
-    /// The location in the flow (e.g., "nodes.fraud_check").
-    pub location: String,
-    /// Human-readable error message.
-    pub message: String,
-}
-
-/// Types of validation errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValidationErrorKind {
-    /// Missing required field.
-    MissingField,
-    /// Invalid value for a field.
-    InvalidValue,
-    /// Duplicate identifier.
-    DuplicateId,
-    /// Reference to non-existent node.
-    InvalidReference,
-    /// Invalid trigger type.
-    InvalidTriggerType,
-    /// Invalid node type.
-    InvalidNodeType,
-    /// Cycle detected (without proper loop declaration).
-    CycleDetected,
-    /// Unreachable node.
-    UnreachableNode,
-    /// Invalid selector syntax.
-    InvalidSelector,
-}
-
-impl std::fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}: {}", self.kind, self.location, self.message)
-    }
-}
-
-impl std::fmt::Display for ValidationErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Self::MissingField => "MISSING_FIELD",
-            Self::InvalidValue => "INVALID_VALUE",
-            Self::DuplicateId => "DUPLICATE_ID",
-            Self::InvalidReference => "INVALID_REFERENCE",
-            Self::InvalidTriggerType => "INVALID_TRIGGER_TYPE",
-            Self::InvalidNodeType => "INVALID_NODE_TYPE",
-            Self::CycleDetected => "CYCLE_DETECTED",
-            Self::UnreachableNode => "UNREACHABLE_NODE",
-            Self::InvalidSelector => "INVALID_SELECTOR",
-        };
-        write!(f, "{}", s)
-    }
-}
-
-impl ValidationError {
-    /// Create a new validation error.
-    pub fn new(
-        kind: ValidationErrorKind,
-        location: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
-        Self {
-            kind,
-            location: location.into(),
-            message: message.into(),
-        }
-    }
-
-    /// Create a missing field error.
-    pub fn missing_field(location: impl Into<String>, field: &str) -> Self {
-        Self::new(
-            ValidationErrorKind::MissingField,
-            location,
-            format!("missing required field '{}'", field),
-        )
-    }
-
-    /// Create an invalid value error.
-    pub fn invalid_value(location: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(ValidationErrorKind::InvalidValue, location, message)
-    }
-
-    /// Create a duplicate ID error.
-    pub fn duplicate_id(location: impl Into<String>, id: &str) -> Self {
-        Self::new(
-            ValidationErrorKind::DuplicateId,
-            location,
-            format!("duplicate identifier '{}'", id),
-        )
-    }
-
-    /// Create an invalid reference error.
-    pub fn invalid_reference(location: impl Into<String>, reference: &str) -> Self {
-        Self::new(
-            ValidationErrorKind::InvalidReference,
-            location,
-            format!("reference to non-existent node '{}'", reference),
-        )
-    }
-}
+use super::ValidationResult;
+use super::error::{ValidationError, ValidationErrorKind};
+use super::limits::ValidationLimits;
+use crate::flow::{FlowDefinition, NodeDefinition, TriggerDefinition};
 
 /// Validator for flow definitions.
 pub struct FlowValidator {
     errors: Vec<ValidationError>,
+    limits: ValidationLimits,
 }
 
 impl FlowValidator {
-    /// Create a new validator.
+    /// Create a new validator with default limits.
     pub fn new() -> Self {
-        Self { errors: Vec::new() }
+        Self {
+            errors: Vec::new(),
+            limits: ValidationLimits::default(),
+        }
+    }
+
+    /// Create a validator with custom limits.
+    pub fn with_limits(limits: ValidationLimits) -> Self {
+        Self {
+            errors: Vec::new(),
+            limits,
+        }
     }
 
     /// Validate a flow definition.
     pub fn validate(mut self, flow: &FlowDefinition) -> ValidationResult {
+        // Check structural limits first (DoS protection)
+        self.validate_limits(flow);
+
+        // Then validate semantics
         self.validate_metadata(flow);
         self.validate_triggers(flow);
         self.validate_nodes(flow);
@@ -133,6 +46,47 @@ impl FlowValidator {
             Ok(())
         } else {
             Err(self.errors)
+        }
+    }
+
+    fn validate_limits(&mut self, flow: &FlowDefinition) {
+        // Check node count
+        if flow.nodes.len() > self.limits.max_node_count {
+            self.add_error(ValidationError::new(
+                ValidationErrorKind::LimitExceeded,
+                "nodes",
+                format!(
+                    "node count ({}) exceeds maximum allowed ({})",
+                    flow.nodes.len(),
+                    self.limits.max_node_count
+                ),
+            ));
+        }
+
+        // Check edge count
+        if flow.edges.len() > self.limits.max_edge_count {
+            self.add_error(ValidationError::new(
+                ValidationErrorKind::LimitExceeded,
+                "edges",
+                format!(
+                    "edge count ({}) exceeds maximum allowed ({})",
+                    flow.edges.len(),
+                    self.limits.max_edge_count
+                ),
+            ));
+        }
+
+        // Check trigger count
+        if flow.triggers.len() > self.limits.max_trigger_count {
+            self.add_error(ValidationError::new(
+                ValidationErrorKind::LimitExceeded,
+                "triggers",
+                format!(
+                    "trigger count ({}) exceeds maximum allowed ({})",
+                    flow.triggers.len(),
+                    self.limits.max_trigger_count
+                ),
+            ));
         }
     }
 
@@ -382,121 +336,5 @@ impl FlowValidator {
 impl Default for FlowValidator {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::flow::EdgeDefinition;
-    use std::collections::HashMap;
-
-    fn minimal_flow() -> FlowDefinition {
-        FlowDefinition {
-            name: "test".to_string(),
-            version: Some("1.0".to_string()),
-            description: None,
-            triggers: vec![TriggerDefinition::new("webhook", "webhook")],
-            nodes: HashMap::new(),
-            edges: vec![],
-            settings: Default::default(),
-        }
-    }
-
-    #[test]
-    fn validate_minimal_flow() {
-        let flow = minimal_flow();
-        let result = FlowValidator::new().validate(&flow);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn validate_missing_name() {
-        let mut flow = minimal_flow();
-        flow.name = String::new();
-
-        let result = FlowValidator::new().validate(&flow);
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.kind == ValidationErrorKind::MissingField && e.location == "flow")
-        );
-    }
-
-    #[test]
-    fn validate_duplicate_trigger_ids() {
-        let mut flow = minimal_flow();
-        flow.triggers = vec![
-            TriggerDefinition::new("dup_id", "webhook"),
-            TriggerDefinition::new("dup_id", "cron"),
-        ];
-
-        let result = FlowValidator::new().validate(&flow);
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.kind == ValidationErrorKind::DuplicateId)
-        );
-    }
-
-    #[test]
-    fn validate_invalid_trigger_type() {
-        let mut flow = minimal_flow();
-        flow.triggers = vec![TriggerDefinition::new("test", "invalid_type")];
-
-        let result = FlowValidator::new().validate(&flow);
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.kind == ValidationErrorKind::InvalidTriggerType)
-        );
-    }
-
-    #[test]
-    fn validate_invalid_edge_reference() {
-        let mut flow = minimal_flow();
-        flow.edges = vec![EdgeDefinition::new("nonexistent", "also_nonexistent")];
-
-        let result = FlowValidator::new().validate(&flow);
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.kind == ValidationErrorKind::InvalidReference)
-        );
-    }
-
-    #[test]
-    fn validate_valid_edge_reference() {
-        let mut flow = minimal_flow();
-        flow.nodes
-            .insert("processor".to_string(), NodeDefinition::new("std::log"));
-        flow.edges = vec![EdgeDefinition::new("webhook", "processor")];
-
-        let result = FlowValidator::new().validate(&flow);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn validate_cron_requires_schedule() {
-        let mut flow = minimal_flow();
-        flow.triggers = vec![TriggerDefinition::new("cron_trigger", "cron")];
-
-        let result = FlowValidator::new().validate(&flow);
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.kind == ValidationErrorKind::MissingField
-                    && e.message.contains("schedule"))
-        );
     }
 }
