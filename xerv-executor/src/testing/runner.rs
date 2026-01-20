@@ -301,7 +301,7 @@ impl FlowRunner {
                 Ok(output) => {
                     // Get arena location
                     let (offset, size) = output.arena_location();
-                    let schema_hash = output.schema_hash;
+                    let schema_hash = output.schema_hash();
 
                     // Log completion
                     let record = WalRecord::node_done(trace_id, node_id, offset, size, schema_hash);
@@ -355,8 +355,8 @@ impl FlowRunner {
         // Collect from upstream nodes
         for edge in self.graph.incoming_edges(node_id) {
             if let Some(output) = outputs.get(&edge.from_node) {
-                if output.port == edge.from_port {
-                    inputs.insert(edge.to_port.clone(), output.data);
+                if output.matches_port(&edge.from_port) {
+                    inputs.insert(edge.to_port.clone(), output.data());
                 }
             }
         }

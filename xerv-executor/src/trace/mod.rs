@@ -98,6 +98,18 @@ impl TraceState {
         (self.arena.reader(), self.arena.writer())
     }
 
+    /// Flush the arena to disk.
+    ///
+    /// This is called before suspension to ensure all data is persisted.
+    pub fn flush_arena(&self) -> xerv_core::error::Result<()> {
+        self.arena.flush()
+    }
+
+    /// Get the path to the arena file.
+    pub fn arena_path(&self) -> std::path::PathBuf {
+        self.arena.path()
+    }
+
     /// Check if a node is ready to execute.
     ///
     /// A node is ready if all its predecessors have completed (or it's an entry point).
@@ -126,8 +138,7 @@ impl TraceState {
     fn has_pending_input(&self, node_id: NodeId, graph: &FlowGraph) -> bool {
         for edge in graph.incoming_edges(node_id) {
             if let Some(output) = self.outputs.get(&edge.from_node) {
-                // Check if the upstream node emitted on the port this edge connects to
-                if output.port == edge.from_port {
+                if output.matches_port(&edge.from_port) {
                     return true;
                 }
             }
@@ -152,8 +163,8 @@ impl TraceState {
         // Collect from upstream nodes
         for edge in graph.incoming_edges(node_id) {
             if let Some(output) = self.outputs.get(&edge.from_node) {
-                if output.port == edge.from_port {
-                    inputs.insert(edge.to_port.clone(), output.data);
+                if output.matches_port(&edge.from_port) {
+                    inputs.insert(edge.to_port.clone(), output.data());
                 }
             }
         }
