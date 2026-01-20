@@ -55,7 +55,7 @@ mod filter;
 
 pub use collector::{
     BufferedCollector, DEFAULT_BUFFER_CAPACITY, LogCollector, LogContext, MultiCollector,
-    NullCollector,
+    NullCollector, SubscriberId,
 };
 pub use event::{LogCategory, LogEvent, LogEventBuilder, LogLevel};
 pub use filter::{LogFilter, LogFilterBuilder};

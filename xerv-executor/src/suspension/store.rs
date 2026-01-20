@@ -58,6 +58,37 @@ impl MemorySuspensionStore {
     pub fn has_suspensions(&self) -> bool {
         !self.suspensions.read().is_empty()
     }
+
+    /// Consume and remove a pending resume decision.
+    ///
+    /// This should be called by the executor after processing a resume.
+    pub fn consume_pending_resume(&self, hook_id: &str) -> Option<ResumeDecision> {
+        self.pending_resumes.write().remove(hook_id)
+    }
+
+    /// Cleanup expired suspensions and return the count removed.
+    ///
+    /// This should be called periodically to prevent memory leaks.
+    pub fn cleanup_expired(&self) -> usize {
+        let expired_ids: Vec<String> = self
+            .suspensions
+            .read()
+            .iter()
+            .filter(|(_, state)| state.is_expired())
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let count = expired_ids.len();
+        if count > 0 {
+            let mut suspensions = self.suspensions.write();
+            for id in &expired_ids {
+                suspensions.remove(id);
+                tracing::warn!(hook_id = %id, "Expired suspension cleaned up");
+            }
+        }
+
+        count
+    }
 }
 
 impl SuspensionStore for MemorySuspensionStore {

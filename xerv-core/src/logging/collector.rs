@@ -28,8 +28,18 @@ pub trait LogCollector: Send + Sync {
     }
 }
 
-/// Type alias for log event subscriber callbacks.
-type LogSubscribers = RwLock<Vec<Arc<dyn Fn(&LogEvent) + Send + Sync>>>;
+/// Unique identifier for a log subscriber.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubscriberId(u64);
+
+/// Internal subscriber entry with ID.
+struct SubscriberEntry {
+    id: SubscriberId,
+    callback: Arc<dyn Fn(&LogEvent) + Send + Sync>,
+}
+
+/// Type alias for log event subscriber storage.
+type LogSubscribers = RwLock<Vec<SubscriberEntry>>;
 
 /// Thread-safe log collector with a bounded ring buffer.
 pub struct BufferedCollector {
@@ -39,6 +49,8 @@ pub struct BufferedCollector {
     capacity: usize,
     /// Next event ID counter.
     next_id: AtomicU64,
+    /// Next subscriber ID counter.
+    next_subscriber_id: AtomicU64,
     /// Optional filter for incoming events.
     filter: Option<LogFilter>,
     /// Subscribers for real-time event notifications.
@@ -52,6 +64,7 @@ impl BufferedCollector {
             buffer: RwLock::new(VecDeque::with_capacity(capacity)),
             capacity,
             next_id: AtomicU64::new(1),
+            next_subscriber_id: AtomicU64::new(1),
             filter: None,
             subscribers: RwLock::new(Vec::new()),
         }
@@ -69,9 +82,31 @@ impl BufferedCollector {
     }
 
     /// Add a subscriber for real-time event notifications.
-    pub fn subscribe(&self, callback: Arc<dyn Fn(&LogEvent) + Send + Sync>) {
+    ///
+    /// Returns a subscriber ID that can be used to unsubscribe later.
+    pub fn subscribe(&self, callback: Arc<dyn Fn(&LogEvent) + Send + Sync>) -> SubscriberId {
+        let id = SubscriberId(self.next_subscriber_id.fetch_add(1, Ordering::SeqCst));
+        let entry = SubscriberEntry { id, callback };
+        self.subscribers.write().push(entry);
+        id
+    }
+
+    /// Remove a subscriber by ID.
+    ///
+    /// Returns true if the subscriber was found and removed.
+    pub fn unsubscribe(&self, id: SubscriberId) -> bool {
         let mut subscribers = self.subscribers.write();
-        subscribers.push(callback);
+        if let Some(pos) = subscribers.iter().position(|e| e.id == id) {
+            subscribers.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the number of active subscribers.
+    pub fn subscriber_count(&self) -> usize {
+        self.subscribers.read().len()
     }
 
     /// Get events matching a filter.
@@ -179,8 +214,8 @@ impl LogCollector for BufferedCollector {
         // Notify subscribers
         {
             let subscribers = self.subscribers.read();
-            for subscriber in subscribers.iter() {
-                subscriber(&event);
+            for entry in subscribers.iter() {
+                (entry.callback)(&event);
             }
         }
 
@@ -479,7 +514,7 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let count_clone = Arc::clone(&count);
 
-        collector.subscribe(Arc::new(move |_event| {
+        let _id = collector.subscribe(Arc::new(move |_event| {
             count_clone.fetch_add(1, Ordering::SeqCst);
         }));
 
@@ -487,6 +522,35 @@ mod tests {
         collector.collect(LogEvent::info(LogCategory::System, "Event 2"));
 
         assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn subscriber_unsubscribe() {
+        use std::sync::atomic::AtomicUsize;
+
+        let collector = BufferedCollector::new(100);
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_clone = Arc::clone(&count);
+
+        let id = collector.subscribe(Arc::new(move |_event| {
+            count_clone.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        assert_eq!(collector.subscriber_count(), 1);
+
+        collector.collect(LogEvent::info(LogCategory::System, "Event 1"));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        // Unsubscribe
+        assert!(collector.unsubscribe(id));
+        assert_eq!(collector.subscriber_count(), 0);
+
+        // Should not trigger callback after unsubscribe
+        collector.collect(LogEvent::info(LogCategory::System, "Event 2"));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        // Unsubscribing again should return false
+        assert!(!collector.unsubscribe(id));
     }
 
     #[test]
