@@ -16,6 +16,11 @@ rust-version = "1.85"
 [features]
 default = []
 wasm = ["dep:wasmtime"]
+# Dispatch backends (pass-through to xerv-core)
+dispatch-raft = ["xerv-core/dispatch-raft"]
+dispatch-redis = ["xerv-core/dispatch-redis"]
+dispatch-nats = ["xerv-core/dispatch-nats"]
+dispatch-all = ["xerv-core/dispatch-all"]
 
 [dependencies]
 xerv-core = { version = "0.1.0", path = "../xerv-core" }

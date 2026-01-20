@@ -60,6 +60,7 @@ pub fn test_executor_config() -> ExecutorConfig {
         node_timeout_ms: 1_000,
         arena_config: test_arena_config(),
         wal_config: test_wal_config(),
+        dispatch_config: xerv_core::dispatch::DispatchConfig::default(),
     }
 }
 

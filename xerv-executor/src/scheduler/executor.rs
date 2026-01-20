@@ -7,6 +7,7 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use xerv_core::arena::{Arena, ArenaConfig};
+use xerv_core::dispatch::{DispatchBackend, DispatchConfig, MemoryDispatch};
 use xerv_core::error::{Result, XervError};
 use xerv_core::logging::{BufferedCollector, LogCategory, LogCollector, LogEvent};
 use xerv_core::traits::{Context, Node, NodeOutput, TriggerEvent};
@@ -35,6 +36,8 @@ pub struct ExecutorConfig {
     pub arena_config: ArenaConfig,
     /// WAL configuration.
     pub wal_config: WalConfig,
+    /// Dispatch backend configuration.
+    pub dispatch_config: DispatchConfig,
 }
 
 impl Default for ExecutorConfig {
@@ -44,7 +47,16 @@ impl Default for ExecutorConfig {
             node_timeout_ms: 30_000,
             arena_config: ArenaConfig::default(),
             wal_config: WalConfig::default(),
+            dispatch_config: DispatchConfig::default(),
         }
+    }
+}
+
+impl ExecutorConfig {
+    /// Set the dispatch configuration.
+    pub fn with_dispatch(mut self, config: DispatchConfig) -> Self {
+        self.dispatch_config = config;
+        self
     }
 }
 
@@ -68,10 +80,14 @@ pub struct Executor {
     pub(crate) pipeline_id: Option<String>,
     /// Suspension store for human-in-the-loop workflows.
     pub(crate) suspension_store: Option<Arc<dyn SuspensionStore>>,
+    /// Dispatch backend for trace queueing (pluggable: Memory, Raft, Redis, NATS).
+    pub(crate) dispatch: Arc<dyn DispatchBackend>,
 }
 
 impl Executor {
     /// Create a new executor.
+    ///
+    /// Uses in-memory dispatch by default. Call `set_dispatch` to use a different backend.
     pub fn new(
         config: ExecutorConfig,
         graph: FlowGraph,
@@ -84,6 +100,10 @@ impl Executor {
         graph.validate()?;
         let execution_order = graph.topological_sort()?;
 
+        // Create default in-memory dispatch backend
+        let dispatch: Arc<dyn DispatchBackend> =
+            Arc::new(MemoryDispatch::new(config.dispatch_config.memory_config()));
+
         Ok(Self {
             config,
             graph: Arc::new(graph),
@@ -94,6 +114,7 @@ impl Executor {
             log_collector,
             pipeline_id,
             suspension_store: None,
+            dispatch,
         })
     }
 
@@ -111,6 +132,10 @@ impl Executor {
         graph.validate()?;
         let execution_order = graph.topological_sort()?;
 
+        // Create default in-memory dispatch backend
+        let dispatch: Arc<dyn DispatchBackend> =
+            Arc::new(MemoryDispatch::new(config.dispatch_config.memory_config()));
+
         Ok(Self {
             config,
             graph: Arc::new(graph),
@@ -121,12 +146,26 @@ impl Executor {
             log_collector,
             pipeline_id,
             suspension_store: Some(suspension_store),
+            dispatch,
         })
     }
 
     /// Set the suspension store after construction.
     pub fn set_suspension_store(&mut self, store: Arc<dyn SuspensionStore>) {
         self.suspension_store = Some(store);
+    }
+
+    /// Set a custom dispatch backend.
+    ///
+    /// Use this to switch from the default in-memory dispatch to Redis, NATS, or Raft.
+    /// Must be called before any traces are started.
+    pub fn set_dispatch(&mut self, dispatch: Arc<dyn DispatchBackend>) {
+        self.dispatch = dispatch;
+    }
+
+    /// Get a reference to the dispatch backend.
+    pub fn dispatch(&self) -> &Arc<dyn DispatchBackend> {
+        &self.dispatch
     }
 
     /// Start a new trace from a trigger event.
