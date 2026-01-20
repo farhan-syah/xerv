@@ -30,7 +30,7 @@ pub mod triggers;
 // Flow control exports
 pub use flow::{
     LoopCondition, LoopNode, MergeNode, MergeStrategy, ResumeMethod, SwitchCondition, SwitchNode,
-    TimeoutAction, WaitNode, WaitPersistence,
+    TimeoutAction, WaitNode,
 };
 
 // Data manipulation exports
@@ -52,7 +52,7 @@ pub mod prelude {
     // Flow control
     pub use crate::flow::{
         LoopCondition, LoopNode, MergeNode, MergeStrategy, ResumeMethod, SwitchCondition,
-        SwitchNode, TimeoutAction, WaitNode, WaitPersistence,
+        SwitchNode, TimeoutAction, WaitNode,
     };
 
     // Data manipulation

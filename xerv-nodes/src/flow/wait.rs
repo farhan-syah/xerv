@@ -2,31 +2,17 @@
 //!
 //! Pauses execution until an external signal is received.
 //! Enables approval workflows and manual intervention patterns.
+//!
+//! # Storage Backend
+//!
+//! The suspension storage backend is a system-level configuration on the Executor,
+//! not a per-node setting. Use `Executor::with_suspension_store()` to configure
+//! the storage backend (in-memory, Redis, database, etc.).
 
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
 use xerv_core::value::Value;
-
-/// Configuration for how the wait state is persisted.
-#[derive(Debug, Clone, Default)]
-pub enum WaitPersistence {
-    /// Store wait state in memory (development only).
-    #[default]
-    Memory,
-    /// Store wait state in Redis.
-    Redis {
-        /// Key prefix for Redis storage.
-        key_prefix: String,
-        /// TTL for the wait state (seconds).
-        ttl_seconds: u64,
-    },
-    /// Store wait state in a database.
-    Database {
-        /// Table name for wait states.
-        table: String,
-    },
-}
 
 /// Configuration for how the wait is resumed.
 #[derive(Debug, Clone, Default)]
@@ -79,13 +65,11 @@ pub enum TimeoutAction {
 ///     type: std::wait
 ///     config:
 ///       hook_id: order_approval_${trace_id}
-///       persistence: redis
-///       resume_method: webhook
-///       timeout_seconds: 86400  # 24 hours
-///       on_timeout: reject
-///       metadata:
-///         approver_email: ${config.approval_email}
-///         order_id: ${order.id}
+///       timeout_secs: 86400  # 24 hours
+///       timeout_action: reject
+///       metadata_fields:
+///         - approver_email
+///         - order_id
 ///     inputs:
 ///       - from: validate_order.out -> in
 ///     outputs:
@@ -96,8 +80,6 @@ pub enum TimeoutAction {
 pub struct WaitNode {
     /// Unique identifier for this wait hook.
     hook_id: String,
-    /// How to persist the wait state.
-    persistence: WaitPersistence,
     /// How the wait can be resumed.
     resume_method: ResumeMethod,
     /// Optional metadata to include with the wait notification.
@@ -109,7 +91,6 @@ impl WaitNode {
     pub fn new(hook_id: impl Into<String>) -> Self {
         Self {
             hook_id: hook_id.into(),
-            persistence: WaitPersistence::Memory,
             resume_method: ResumeMethod::Webhook,
             metadata_fields: Vec::new(),
         }
@@ -118,29 +99,6 @@ impl WaitNode {
     /// Create a wait node with webhook resumption.
     pub fn webhook(hook_id: impl Into<String>) -> Self {
         Self::new(hook_id)
-    }
-
-    /// Create a wait node with Redis persistence.
-    pub fn with_redis(
-        hook_id: impl Into<String>,
-        key_prefix: impl Into<String>,
-        ttl_seconds: u64,
-    ) -> Self {
-        Self {
-            hook_id: hook_id.into(),
-            persistence: WaitPersistence::Redis {
-                key_prefix: key_prefix.into(),
-                ttl_seconds,
-            },
-            resume_method: ResumeMethod::Webhook,
-            metadata_fields: Vec::new(),
-        }
-    }
-
-    /// Set the persistence method.
-    pub fn with_persistence(mut self, persistence: WaitPersistence) -> Self {
-        self.persistence = persistence;
-        self
     }
 
     /// Set the resume method.
@@ -216,7 +174,6 @@ impl Node for WaitNode {
                 "trace_id": ctx.trace_id().to_string(),
                 "node_metadata": node_metadata,
                 "resume_url": format!("/api/v1/resume/{}", self.hook_id),
-                "persistence": format!("{:?}", self.persistence),
             });
 
             // Build suspension request
@@ -240,7 +197,6 @@ impl Node for WaitNode {
             tracing::info!(
                 hook_id = %self.hook_id,
                 trace_id = %ctx.trace_id(),
-                persistence = ?self.persistence,
                 resume_method = ?self.resume_method,
                 "Wait: requesting suspension for human-in-the-loop approval"
             );
@@ -275,12 +231,6 @@ mod tests {
     }
 
     #[test]
-    fn wait_persistence_default() {
-        let persistence = WaitPersistence::default();
-        assert!(matches!(persistence, WaitPersistence::Memory));
-    }
-
-    #[test]
     fn wait_resume_method_default() {
         let method = ResumeMethod::default();
         assert!(matches!(method, ResumeMethod::Webhook));
@@ -290,18 +240,6 @@ mod tests {
     fn wait_timeout_action_default() {
         let action = TimeoutAction::default();
         assert!(matches!(action, TimeoutAction::Reject));
-    }
-
-    #[test]
-    fn wait_with_redis() {
-        let node = WaitNode::with_redis("hook", "xerv:wait", 3600);
-        assert!(matches!(
-            node.persistence,
-            WaitPersistence::Redis {
-                ttl_seconds: 3600,
-                ..
-            }
-        ));
     }
 
     #[test]
@@ -341,14 +279,17 @@ mod tests {
     #[test]
     fn wait_builder_chain() {
         let node = WaitNode::new("approval_hook")
-            .with_persistence(WaitPersistence::Redis {
-                key_prefix: "xerv".to_string(),
-                ttl_seconds: 86400,
-            })
+            .with_timeout(3600, TimeoutAction::Reject)
             .with_metadata(vec!["order_id".to_string()]);
 
         assert_eq!(node.hook_id, "approval_hook");
-        assert!(matches!(node.persistence, WaitPersistence::Redis { .. }));
+        assert!(matches!(
+            node.resume_method,
+            ResumeMethod::Timeout {
+                seconds: 3600,
+                on_timeout: TimeoutAction::Reject
+            }
+        ));
         assert_eq!(node.metadata_fields.len(), 1);
     }
 }

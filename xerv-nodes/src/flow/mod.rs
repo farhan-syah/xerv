@@ -14,4 +14,4 @@ mod wait;
 pub use loop_node::{LoopCondition, LoopNode};
 pub use merge::{MergeNode, MergeStrategy};
 pub use switch::{SwitchCondition, SwitchNode};
-pub use wait::{ResumeMethod, TimeoutAction, WaitNode, WaitPersistence};
+pub use wait::{ResumeMethod, TimeoutAction, WaitNode};
