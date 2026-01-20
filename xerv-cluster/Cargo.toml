@@ -1,0 +1,46 @@
+[package]
+name = "xerv-cluster"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Distributed clustering and consensus for XERV using OpenRaft"
+keywords = ["raft", "consensus", "distributed", "cluster", "xerv"]
+categories = ["asynchronous", "network-programming"]
+
+[dependencies]
+# Core XERV dependencies
+xerv-core = { path = "../xerv-core" }
+
+# OpenRaft for distributed consensus
+openraft = { version = "0.9", features = ["serde", "tracing-log", "storage-v2"] }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# gRPC for network transport
+tonic = "0.12"
+prost = "0.13"
+
+# Utilities
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+
+# Async utilities
+async-trait = "0.1"
+futures = "0.3"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3"
