@@ -8,6 +8,7 @@
 
 mod executor;
 mod graph;
+mod suspension;
 
 pub use executor::{ExecutionSignal, Executor, ExecutorConfig};
 pub use graph::{Edge, FlowGraph, GraphNode};
