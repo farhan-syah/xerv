@@ -276,6 +276,60 @@ impl Wal {
     pub fn directory(&self) -> PathBuf {
         self.inner.lock().config.directory.clone()
     }
+
+    /// Purge old WAL segments, keeping only the most recent ones.
+    ///
+    /// # Arguments
+    /// * `keep_count` - Number of recent segments to keep (including current)
+    ///
+    /// # Returns
+    /// Number of segments deleted
+    pub fn purge_old_segments(&self, keep_count: usize) -> Result<usize> {
+        let inner = self.inner.lock();
+        let current_sequence = inner.sequence;
+        let directory = inner.config.directory.clone();
+        drop(inner);
+
+        let mut deleted = 0;
+
+        if let Ok(entries) = std::fs::read_dir(&directory) {
+            let mut segments: Vec<(u64, PathBuf)> = Vec::new();
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+
+                if name_str.starts_with("wal_") && name_str.ends_with(".log") {
+                    if let Some(seq_str) = name_str
+                        .strip_prefix("wal_")
+                        .and_then(|s| s.strip_suffix(".log"))
+                    {
+                        if let Ok(seq) = u64::from_str_radix(seq_str, 16) {
+                            segments.push((seq, path));
+                        }
+                    }
+                }
+            }
+
+            // Sort by sequence (oldest first)
+            segments.sort_by_key(|(seq, _)| *seq);
+
+            // Delete all but the last keep_count segments (never delete current)
+            let to_delete = segments.len().saturating_sub(keep_count);
+            for (seq, path) in segments.into_iter().take(to_delete) {
+                // Never delete the current segment
+                if seq == current_sequence {
+                    continue;
+                }
+                if std::fs::remove_file(&path).is_ok() {
+                    deleted += 1;
+                }
+            }
+        }
+
+        Ok(deleted)
+    }
 }
 
 impl Drop for Wal {

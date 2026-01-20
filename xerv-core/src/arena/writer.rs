@@ -384,6 +384,26 @@ impl Arena {
             trace_id: self.trace_id,
         }
     }
+
+    /// Delete the arena file from disk.
+    ///
+    /// This should be called when a trace completes and the arena is no longer needed.
+    /// The arena becomes unusable after this call.
+    pub fn delete(self) -> Result<()> {
+        let path = {
+            let inner = self.inner.read();
+            inner.path.clone()
+        };
+
+        // Drop self to release the mmap and file handle
+        drop(self);
+
+        // Now delete the file
+        std::fs::remove_file(&path).map_err(|e| XervError::ArenaCreate {
+            path,
+            cause: format!("Failed to delete arena file: {}", e),
+        })
+    }
 }
 
 impl Drop for Arena {
