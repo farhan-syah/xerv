@@ -14,6 +14,7 @@
 #![warn(missing_docs)]
 
 pub mod api;
+pub mod circuit_breaker;
 pub mod linker;
 pub mod listener;
 pub mod loader;
@@ -30,6 +31,7 @@ pub mod wasm;
 /// Prelude for convenient imports.
 pub mod prelude {
     pub use crate::api::{ApiError, ApiServer, AppState, ServerConfig, TraceHistory, TraceRecord};
+    pub use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
     pub use crate::linker::{CompiledSelector, Linker, ResolvedField, Selector, SelectorParser};
     pub use crate::listener::{Listener, ListenerId, ListenerPool};
     pub use crate::loader::{FlowBuilder, FlowLoader, LoadedFlow, LoaderConfig, LoaderError};
