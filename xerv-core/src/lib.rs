@@ -42,6 +42,7 @@ pub mod flow;
 pub mod logging;
 pub mod prelude;
 pub mod schema;
+pub mod suspension;
 // Testing module must be declared before traits because traits/context.rs uses testing providers
 pub mod testing;
 pub mod traits;
