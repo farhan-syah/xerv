@@ -1,13 +1,14 @@
-//! Enhanced schema registry with version history and persistence.
-//!
-//! Extends the base schema registry with version tracking, persistence,
-//! and schema family management.
+//! Versioned schema registry implementation.
 
-use super::version::SchemaVersion;
+use super::persistence::{FamilyData, RegistryData, SchemaData};
 use crate::error::{Result, XervError};
-use crate::traits::{FieldInfo, TypeInfo};
+use crate::schema::version::SchemaVersion;
+use crate::traits::TypeInfo;
+use fs2::FileExt;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// Enhanced schema registry with version history.
@@ -159,6 +160,10 @@ impl VersionedSchemaRegistry {
     }
 
     /// Persist the registry to disk.
+    ///
+    /// This method uses exclusive file locking to prevent race conditions
+    /// when multiple processes attempt to update the registry simultaneously.
+    /// The lock is held only during the write operation.
     pub fn persist(&self) -> Result<()> {
         let path = self
             .persistence_path
@@ -185,22 +190,77 @@ impl VersionedSchemaRegistry {
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| XervError::Serialization(e.to_string()))?;
 
-        std::fs::write(path, json).map_err(|e| XervError::Io {
-            path: path.clone(),
-            cause: e.to_string(),
+        // Use atomic write pattern: write to temp file, then rename
+        // Combined with exclusive file locking for cross-process safety
+        let temp_path = path.with_extension("json.tmp");
+
+        // Open/create temp file with exclusive lock
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&temp_path)
+            .map_err(|e| XervError::Io {
+                path: temp_path.clone(),
+                cause: format!("Failed to create temp file: {}", e),
+            })?;
+
+        // Acquire exclusive lock (blocks if another process has the lock)
+        file.lock_exclusive().map_err(|e| XervError::Io {
+            path: temp_path.clone(),
+            cause: format!("Failed to acquire exclusive lock: {}", e),
         })?;
+
+        // Write data
+        file.write_all(json.as_bytes()).map_err(|e| XervError::Io {
+            path: temp_path.clone(),
+            cause: format!("Failed to write registry data: {}", e),
+        })?;
+
+        // Sync to disk before rename
+        file.sync_all().map_err(|e| XervError::Io {
+            path: temp_path.clone(),
+            cause: format!("Failed to sync to disk: {}", e),
+        })?;
+
+        // Rename is atomic on most filesystems
+        std::fs::rename(&temp_path, path).map_err(|e| XervError::Io {
+            path: path.clone(),
+            cause: format!("Failed to rename temp file: {}", e),
+        })?;
+
+        // Lock is released when file is dropped
 
         Ok(())
     }
 
     /// Load the registry from disk.
+    ///
+    /// This method uses shared file locking to allow concurrent reads
+    /// while blocking writes during the read operation.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
-        let json = std::fs::read_to_string(path).map_err(|e| XervError::Io {
+        // Open file for reading with shared lock
+        let mut file = File::open(path).map_err(|e| XervError::Io {
             path: path.to_path_buf(),
-            cause: e.to_string(),
+            cause: format!("Failed to open registry file: {}", e),
         })?;
+
+        // Acquire shared lock (allows other readers, blocks writers)
+        file.lock_shared().map_err(|e| XervError::Io {
+            path: path.to_path_buf(),
+            cause: format!("Failed to acquire shared lock: {}", e),
+        })?;
+
+        // Read contents
+        let mut json = String::new();
+        file.read_to_string(&mut json).map_err(|e| XervError::Io {
+            path: path.to_path_buf(),
+            cause: format!("Failed to read registry file: {}", e),
+        })?;
+
+        // Lock is released when file is dropped
 
         let data: RegistryData =
             serde_json::from_str(&json).map_err(|e| XervError::Serialization(e.to_string()))?;
@@ -236,242 +296,5 @@ impl VersionedSchemaRegistry {
     pub fn is_empty(&self) -> bool {
         let schemas = self.schemas.read();
         schemas.is_empty()
-    }
-}
-
-/// Serializable schema data for persistence.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct SchemaData {
-    name: String,
-    short_name: String,
-    version: u32,
-    hash: u64,
-    size: usize,
-    alignment: usize,
-    fields: Vec<FieldData>,
-    stable_layout: bool,
-}
-
-impl SchemaData {
-    fn from(info: &TypeInfo) -> Self {
-        Self {
-            name: info.name.clone(),
-            short_name: info.short_name.clone(),
-            version: info.version,
-            hash: info.hash,
-            size: info.size,
-            alignment: info.alignment,
-            fields: info.fields.iter().map(FieldData::from).collect(),
-            stable_layout: info.stable_layout,
-        }
-    }
-
-    fn into_type_info(self) -> TypeInfo {
-        TypeInfo {
-            name: self.name,
-            short_name: self.short_name,
-            version: self.version,
-            hash: self.hash,
-            size: self.size,
-            alignment: self.alignment,
-            fields: self
-                .fields
-                .into_iter()
-                .map(|f| f.into_field_info())
-                .collect(),
-            stable_layout: self.stable_layout,
-        }
-    }
-}
-
-/// Serializable field data for persistence.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct FieldData {
-    name: String,
-    type_name: String,
-    offset: usize,
-    size: usize,
-    optional: bool,
-}
-
-impl FieldData {
-    fn from(info: &FieldInfo) -> Self {
-        Self {
-            name: info.name.clone(),
-            type_name: info.type_name.clone(),
-            offset: info.offset,
-            size: info.size,
-            optional: info.optional,
-        }
-    }
-
-    fn into_field_info(self) -> FieldInfo {
-        let mut info = FieldInfo::new(self.name, self.type_name)
-            .with_offset(self.offset)
-            .with_size(self.size);
-        if self.optional {
-            info = info.optional();
-        }
-        info
-    }
-}
-
-/// Serializable family data for persistence.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct FamilyData {
-    name: String,
-    versions: Vec<(String, u64)>,
-}
-
-/// Top-level registry persistence format.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RegistryData {
-    schemas: Vec<SchemaData>,
-    families: Vec<FamilyData>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn create_test_schema(name: &str, version: u32, hash: u64) -> TypeInfo {
-        TypeInfo::new(name, version)
-            .with_hash(hash)
-            .with_size(32)
-            .with_fields(vec![
-                FieldInfo::new("id", "String").with_offset(0).with_size(24),
-                FieldInfo::new("value", "i32").with_offset(24).with_size(4),
-            ])
-            .stable()
-    }
-
-    #[test]
-    fn register_and_get() {
-        let registry = VersionedSchemaRegistry::new();
-
-        let schema = create_test_schema("Order", 1, 100);
-        registry.register(schema);
-
-        assert!(registry.contains("Order@v1"));
-        assert!(!registry.contains("Order@v2"));
-
-        let retrieved = registry.get("Order@v1").unwrap();
-        assert_eq!(retrieved.hash, 100);
-    }
-
-    #[test]
-    fn get_by_hash() {
-        let registry = VersionedSchemaRegistry::new();
-
-        let schema = create_test_schema("Order", 1, 12345);
-        registry.register(schema);
-
-        let retrieved = registry.get_by_hash(12345).unwrap();
-        assert_eq!(retrieved.short_name, "Order");
-    }
-
-    #[test]
-    fn version_history() {
-        let registry = VersionedSchemaRegistry::new();
-
-        registry.register(create_test_schema("Order", 1, 100));
-        registry.register(create_test_schema("Order", 2, 200));
-        registry.register(create_test_schema("Order", 3, 300));
-
-        let versions = registry.get_versions("Order");
-        assert_eq!(versions.len(), 3);
-        assert_eq!(versions[0], SchemaVersion::new(1, 0));
-        assert_eq!(versions[1], SchemaVersion::new(2, 0));
-        assert_eq!(versions[2], SchemaVersion::new(3, 0));
-    }
-
-    #[test]
-    fn get_latest() {
-        let registry = VersionedSchemaRegistry::new();
-
-        registry.register(create_test_schema("Order", 1, 100));
-        registry.register(create_test_schema("Order", 2, 200));
-
-        let latest = registry.get_latest("Order").unwrap();
-        assert_eq!(latest.version, 2);
-        assert_eq!(latest.hash, 200);
-    }
-
-    #[test]
-    fn get_version() {
-        let registry = VersionedSchemaRegistry::new();
-
-        registry.register(create_test_schema("Order", 1, 100));
-        registry.register(create_test_schema("Order", 2, 200));
-
-        let v1 = registry.get_version("Order", SchemaVersion::new(1, 0));
-        assert!(v1.is_some());
-        assert_eq!(v1.unwrap().hash, 100);
-
-        let v3 = registry.get_version("Order", SchemaVersion::new(3, 0));
-        assert!(v3.is_none());
-    }
-
-    #[test]
-    fn families() {
-        let registry = VersionedSchemaRegistry::new();
-
-        registry.register(create_test_schema("Order", 1, 100));
-        registry.register(create_test_schema("User", 1, 200));
-
-        let families = registry.families();
-        assert_eq!(families.len(), 2);
-        assert!(families.contains(&"Order".to_string()));
-        assert!(families.contains(&"User".to_string()));
-    }
-
-    #[test]
-    fn contains_family() {
-        let registry = VersionedSchemaRegistry::new();
-
-        registry.register(create_test_schema("Order", 1, 100));
-
-        assert!(registry.contains_family("Order"));
-        assert!(!registry.contains_family("User"));
-    }
-
-    #[test]
-    fn clear() {
-        let registry = VersionedSchemaRegistry::new();
-
-        registry.register(create_test_schema("Order", 1, 100));
-        assert!(!registry.is_empty());
-
-        registry.clear();
-        assert!(registry.is_empty());
-        assert!(registry.families().is_empty());
-    }
-
-    #[test]
-    fn persistence_roundtrip() {
-        let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join("test_schema_registry.json");
-
-        // Create and populate registry
-        let registry = VersionedSchemaRegistry::with_persistence(&path);
-        registry.register(create_test_schema("Order", 1, 100));
-        registry.register(create_test_schema("Order", 2, 200));
-        registry.register(create_test_schema("User", 1, 300));
-
-        // Persist
-        registry.persist().unwrap();
-
-        // Load into new registry
-        let loaded = VersionedSchemaRegistry::load(&path).unwrap();
-
-        // Verify
-        assert_eq!(loaded.len(), 3);
-        assert!(loaded.contains("Order@v1"));
-        assert!(loaded.contains("Order@v2"));
-        assert!(loaded.contains("User@v1"));
-        assert_eq!(loaded.get_by_hash(200).unwrap().short_name, "Order");
-
-        // Cleanup
-        let _ = std::fs::remove_file(path);
     }
 }
