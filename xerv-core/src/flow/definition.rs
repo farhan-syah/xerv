@@ -1,6 +1,6 @@
 //! Flow definition - the top-level YAML document.
 
-use super::validation::{FlowValidator, ValidationResult};
+use super::validation::{FlowValidator, ValidationLimits, ValidationResult};
 use super::{EdgeDefinition, FlowSettings, NodeDefinition, TriggerDefinition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -102,20 +102,81 @@ impl FlowDefinition {
     }
 
     /// Parse a flow definition from YAML string.
+    ///
+    /// Note: This method does not validate size or depth limits.
+    /// For secure parsing, use `from_yaml_with_limits` or `from_yaml_validated`.
     pub fn from_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
         serde_yaml::from_str(yaml)
     }
 
+    /// Parse a flow definition from YAML string with security limits.
+    ///
+    /// This method validates:
+    /// - Content size (default: 10MB max)
+    /// - Nesting depth (default: 100 levels max)
+    pub fn from_yaml_with_limits(
+        yaml: &str,
+        limits: &ValidationLimits,
+    ) -> Result<Self, FlowLoadError> {
+        // Validate content size BEFORE parsing (DoS protection)
+        limits
+            .validate_content_size(yaml)
+            .map_err(|e| FlowLoadError::LimitExceeded { error: e })?;
+
+        // Parse to intermediate value to check depth
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(yaml).map_err(|e| FlowLoadError::ParseString { source: e })?;
+
+        // Validate nesting depth (DoS protection against stack overflow)
+        limits
+            .validate_nesting_depth(&value)
+            .map_err(|e| FlowLoadError::LimitExceeded { error: e })?;
+
+        // Now deserialize to FlowDefinition
+        serde_yaml::from_value(value).map_err(|e| FlowLoadError::ParseString { source: e })
+    }
+
     /// Parse a flow definition from YAML file.
     pub fn from_file(path: &std::path::Path) -> Result<Self, FlowLoadError> {
+        Self::from_file_with_limits(path, &ValidationLimits::default())
+    }
+
+    /// Parse a flow definition from YAML file with security limits.
+    pub fn from_file_with_limits(
+        path: &std::path::Path,
+        limits: &ValidationLimits,
+    ) -> Result<Self, FlowLoadError> {
+        // Check file size before reading (early rejection)
+        let metadata = std::fs::metadata(path).map_err(|e| FlowLoadError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+
+        if metadata.len() as usize > limits.max_file_size {
+            return Err(FlowLoadError::LimitExceeded {
+                error: super::validation::ValidationError::new(
+                    super::validation::ValidationErrorKind::LimitExceeded,
+                    "flow",
+                    format!(
+                        "file size ({} bytes) exceeds maximum allowed ({} bytes)",
+                        metadata.len(),
+                        limits.max_file_size
+                    ),
+                ),
+            });
+        }
+
         let content = std::fs::read_to_string(path).map_err(|e| FlowLoadError::Io {
             path: path.to_path_buf(),
             source: e,
         })?;
 
-        Self::from_yaml(&content).map_err(|e| FlowLoadError::Parse {
-            path: path.to_path_buf(),
-            source: e,
+        Self::from_yaml_with_limits(&content, limits).map_err(|e| match e {
+            FlowLoadError::ParseString { source } => FlowLoadError::Parse {
+                path: path.to_path_buf(),
+                source,
+            },
+            other => other,
         })
     }
 
@@ -129,11 +190,28 @@ impl FlowDefinition {
         FlowValidator::new().validate(self)
     }
 
-    /// Parse and validate in one step.
+    /// Parse and validate in one step with default limits.
     pub fn from_yaml_validated(yaml: &str) -> Result<Self, FlowLoadError> {
-        let flow = Self::from_yaml(yaml).map_err(|e| FlowLoadError::ParseString { source: e })?;
+        Self::from_yaml_validated_with_limits(yaml, &ValidationLimits::default())
+    }
 
-        flow.validate()
+    /// Parse and validate in one step with custom limits.
+    ///
+    /// This is the recommended method for parsing untrusted YAML as it:
+    /// 1. Validates content size before parsing
+    /// 2. Validates nesting depth after initial parse
+    /// 3. Validates node/edge/trigger counts
+    /// 4. Validates semantic correctness
+    pub fn from_yaml_validated_with_limits(
+        yaml: &str,
+        limits: &ValidationLimits,
+    ) -> Result<Self, FlowLoadError> {
+        // Parse with size and depth limits
+        let flow = Self::from_yaml_with_limits(yaml, limits)?;
+
+        // Validate with node/edge/trigger count limits
+        FlowValidator::with_limits(limits.clone())
+            .validate(&flow)
             .map_err(|errors| FlowLoadError::Validation { errors })?;
 
         Ok(flow)
@@ -235,23 +313,42 @@ impl FlowDefinition {
 }
 
 /// Error loading a flow definition.
+///
+/// This enum represents all possible errors that can occur when loading,
+/// parsing, or validating a flow definition from YAML.
 #[derive(Debug)]
 pub enum FlowLoadError {
     /// I/O error reading file.
     Io {
+        /// Path to the file that couldn't be read.
         path: std::path::PathBuf,
+        /// The underlying I/O error.
         source: std::io::Error,
     },
-    /// YAML parse error.
+    /// YAML parse error from file.
     Parse {
+        /// Path to the file that couldn't be parsed.
         path: std::path::PathBuf,
+        /// The underlying YAML parse error.
         source: serde_yaml::Error,
     },
-    /// YAML parse error (from string).
-    ParseString { source: serde_yaml::Error },
-    /// Validation errors.
+    /// YAML parse error from string input.
+    ParseString {
+        /// The underlying YAML parse error.
+        source: serde_yaml::Error,
+    },
+    /// Flow validation failed with one or more errors.
     Validation {
+        /// List of validation errors found in the flow.
         errors: Vec<super::validation::ValidationError>,
+    },
+    /// Validation limit exceeded (size, depth, or count).
+    ///
+    /// This error occurs when the flow exceeds configured security limits,
+    /// such as maximum file size, nesting depth, or node count.
+    LimitExceeded {
+        /// The specific limit that was exceeded.
+        error: super::validation::ValidationError,
     },
 }
 
@@ -284,6 +381,9 @@ impl std::fmt::Display for FlowLoadError {
                 }
                 Ok(())
             }
+            Self::LimitExceeded { error } => {
+                write!(f, "flow validation limit exceeded: {}", error)
+            }
         }
     }
 }
@@ -295,6 +395,7 @@ impl std::error::Error for FlowLoadError {
             Self::Parse { source, .. } => Some(source),
             Self::ParseString { source } => Some(source),
             Self::Validation { .. } => None,
+            Self::LimitExceeded { .. } => None,
         }
     }
 }
