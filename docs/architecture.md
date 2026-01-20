@@ -81,6 +81,7 @@ graph TD
 ```
 
 The **Header** contains:
+
 - Trace ID (UUID)
 - Current data offset (points to end of written data)
 - Pipeline config offset and size
@@ -104,6 +105,7 @@ let read_guard = arena.read(ptr)?;  // Returns archived reference
 ```
 
 Benefits:
+
 - **Efficient data passing** between writes and reads
 - **Persistent** across process restarts (pointer is just an offset)
 - **Multi-reader safe** (OS handles concurrent access)
@@ -167,6 +169,7 @@ impl<T> RelPtr<T> {
 ```
 
 Why relative offsets?
+
 - Survive process restarts (mmap may remap at different virtual address)
 - Safe for serialization (not absolute memory addresses)
 - Compact storage (u32 offset vs u64 pointer)
@@ -201,16 +204,16 @@ Example: Order processing flow
 
 ```yaml
 nodes:
-  fraud_check:      # NodeId 1
+  fraud_check: # NodeId 1
     type: std::switch
 
-  process_safe:     # NodeId 2
+  process_safe: # NodeId 2
     type: std::log
 
-  process_risky:    # NodeId 3
+  process_risky: # NodeId 3
     type: std::log
 
-  merge:            # NodeId 4
+  merge: # NodeId 4
     type: std::merge
 
 edges:
@@ -221,6 +224,7 @@ edges:
 ```
 
 Results in DAG:
+
 ```mermaid
 graph LR
     FC["fraud_check<br/>(1)"]
@@ -266,6 +270,7 @@ impl Executor {
 ```
 
 For the order flow, execution_order becomes:
+
 ```mermaid
 graph TD
     L0["<b>Level 0:</b> [1]<br/>(fraud_check first)"]
@@ -417,6 +422,7 @@ impl Linker {
 ### Example
 
 Node config:
+
 ```yaml
 check_limit:
   type: std::switch
@@ -428,6 +434,7 @@ check_limit:
 ```
 
 At link time:
+
 ```
 Selector: "${pipeline.config.limit}"
 ├─ Root: "pipeline"
@@ -442,6 +449,7 @@ Selector: "${pipeline.config.limit}"
 ```
 
 At runtime:
+
 ```
 arena.read(compiled_selector.resolve(arena))
 ├─ base_ptr = arena.node_output(pipeline_node)
@@ -599,6 +607,7 @@ impl CrashReplayer {
 ## Putting It Together: A Trace Execution
 
 Request arrives at webhook:
+
 ```mermaid
 sequenceDiagram
     participant Webhook as HTTP Request
@@ -650,6 +659,127 @@ sequenceDiagram
     Pipeline-->>Webhook: HTTP 200 with trace ID
 ```
 
+## Execution Modes
+
+XERV supports two execution modes with different trade-offs. Choose based on your requirements:
+
+### Local Mode (Single-Node)
+
+**Best for:** High-throughput, low-latency workloads on a single machine.
+
+```
+┌─────────────────────────────────────────────┐
+│              XERV Local Mode                │
+│                                             │
+│  ┌─────────┐   ┌─────────┐   ┌─────────┐   │
+│  │ Trigger │──▶│Executor │──▶│  Arena  │   │
+│  └─────────┘   └─────────┘   └─────────┘   │
+│                     │                       │
+│                     ▼                       │
+│                ┌─────────┐                  │
+│                │   WAL   │                  │
+│                └─────────┘                  │
+└─────────────────────────────────────────────┘
+```
+
+**Characteristics:**
+
+- **Zero-copy data passing** - Nodes share data via RelPtr offsets in memory-mapped arena
+- **Maximum throughput** - No network serialization overhead
+- **Lowest latency** - Direct memory access, no consensus delays
+- **Single point of failure** - No automatic failover
+
+**When to use:**
+
+- Edge deployments with local data processing
+- High-frequency pipelines (1000+ traces/second)
+- Latency-sensitive workloads (sub-millisecond node execution)
+- Development and testing
+
+**Configuration:**
+
+```rust
+// Local mode is the default - no cluster config needed
+let executor = Executor::new(flow_graph)?;
+executor.run(trace).await?;
+```
+
+### Distributed Mode (Cluster)
+
+**Best for:** High availability and horizontal scaling across multiple machines.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  XERV Cluster Mode                       │
+│                                                          │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐          │
+│  │  Node 1  │◄──▶│  Node 2  │◄──▶│  Node 3  │          │
+│  │ (Leader) │    │(Follower)│    │(Follower)│          │
+│  └────┬─────┘    └────┬─────┘    └────┬─────┘          │
+│       │               │               │                 │
+│       └───────────────┼───────────────┘                 │
+│                       │                                 │
+│               ┌───────▼───────┐                         │
+│               │ Raft Consensus│                         │
+│               │ (OpenRaft)    │                         │
+│               └───────────────┘                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Characteristics:**
+
+- **Automatic failover** - Leader election if current leader fails
+- **State replication** - Pipeline definitions synced across nodes
+- **Network overhead** - Consensus requires gRPC communication
+- **Horizontal scaling** - Distribute load across nodes
+
+**When to use:**
+
+- Production deployments requiring high availability
+- Geographic distribution (nodes closer to data sources)
+- Workloads that can tolerate slightly higher latency for reliability
+- Teams needing zero-downtime deployments
+
+**Configuration:**
+
+```rust
+use xerv_cluster::{ClusterConfig, ClusterNode};
+
+let config = ClusterConfig::builder()
+    .node_id(1)
+    .listen_addr("127.0.0.1:5000")
+    .peers(vec![
+        (2, "127.0.0.1:5001".to_string()),
+        (3, "127.0.0.1:5002".to_string()),
+    ])
+    .build();
+
+let node = ClusterNode::start(config).await?;
+```
+
+### Mode Comparison
+
+| Aspect            | Local Mode                | Cluster Mode                    |
+| ----------------- | ------------------------- | ------------------------------- |
+| **Throughput**    | Highest (10k+ traces/sec) | Moderate (limited by consensus) |
+| **Latency**       | Lowest (sub-ms possible)  | Higher (consensus round-trips)  |
+| **Availability**  | Single point of failure   | Automatic failover              |
+| **Data locality** | Zero-copy via RelPtr      | Network serialization required  |
+| **Complexity**    | Simple deployment         | Requires cluster coordination   |
+| **Use case**      | Edge, dev, high-frequency | Production HA, multi-region     |
+
+### Architectural Trade-offs
+
+**Zero-copy vs. Distribution:**
+The RelPtr mechanism that enables zero-copy data passing is inherently local - offsets reference positions in a memory-mapped file on a single machine. When running in cluster mode:
+
+1. **Trace affinity** - A trace executes entirely on one node (the arena is local)
+2. **Work distribution** - The leader assigns new traces to nodes, but doesn't migrate mid-execution
+3. **Metadata replication** - Pipeline definitions and completion status are replicated via Raft
+4. **Data remains local** - Arena files are not replicated (would negate zero-copy benefits)
+
+This design preserves the zero-copy performance advantage while enabling cluster-level coordination and failover.
+
 ## Performance Characteristics
 
 ### Memory
@@ -693,11 +823,13 @@ pub struct CircuitBreakerConfig {
 ```
 
 **States:**
+
 - **Closed** - Normal operation, all requests allowed
 - **Open** - Circuit tripped, requests rejected immediately
 - **HalfOpen** - Testing recovery, limited requests allowed
 
 **Operation:**
+
 1. Pipeline tracks failures within sliding window
 2. When threshold exceeded, circuit opens (rejects all traces)
 3. After recovery timeout, enters half-open state
@@ -709,6 +841,7 @@ pub struct CircuitBreakerConfig {
 For high availability and horizontal scaling, XERV supports multi-node deployment:
 
 **Architecture:**
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    XERV Cluster                             │
@@ -732,6 +865,7 @@ For high availability and horizontal scaling, XERV supports multi-node deploymen
 ```
 
 **Features:**
+
 - **Raft Consensus** - Leader election and log replication via OpenRaft
 - **Automatic Failover** - New leader elected if current leader fails
 - **State Replication** - Trace execution state replicated across nodes
@@ -739,6 +873,7 @@ For high availability and horizontal scaling, XERV supports multi-node deploymen
 - **Membership Management** - Dynamic adding/removing of cluster nodes
 
 **Usage:**
+
 ```rust
 use xerv_cluster::{ClusterConfig, ClusterNode};
 
@@ -760,6 +895,7 @@ node.execute(ClusterCommand::StartTrace { ... }).await?;
 ```
 
 **When to Use Clustering:**
+
 - **High availability** - Survive node failures without downtime
 - **Horizontal scaling** - Distribute trace execution across multiple nodes
 - **Geographic distribution** - Place nodes closer to data sources
