@@ -1,59 +1,17 @@
-//! Suspension request and state types.
+//! Suspension state types for the executor.
+//!
+//! Core types (`TimeoutAction`, `SuspensionRequest`) are defined in `xerv-core::suspension`
+//! and re-exported here for convenience. This module adds executor-specific types:
+//! - `SuspendedTraceState` - Runtime state of a suspended trace
+//! - `ResumeDecision` - Decision made when resuming
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use xerv_core::types::{NodeId, TraceId};
 
-/// Action to take when a suspension times out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum TimeoutAction {
-    /// Auto-approve and continue execution on "out" port.
-    Approve,
-    /// Auto-reject and emit to "rejected" port.
-    #[default]
-    Reject,
-    /// Escalate and emit to "escalated" port.
-    Escalate,
-}
-
-/// A request from a node to suspend trace execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SuspensionRequest {
-    /// Unique hook ID for this suspension.
-    pub hook_id: String,
-    /// Timeout in seconds (None = no timeout).
-    pub timeout_secs: Option<u64>,
-    /// Action to take on timeout.
-    pub timeout_action: TimeoutAction,
-    /// Additional metadata for the approval UI.
-    pub metadata: serde_json::Value,
-}
-
-impl SuspensionRequest {
-    /// Create a new suspension request with the given hook ID.
-    pub fn new(hook_id: impl Into<String>) -> Self {
-        Self {
-            hook_id: hook_id.into(),
-            timeout_secs: None,
-            timeout_action: TimeoutAction::default(),
-            metadata: serde_json::Value::Null,
-        }
-    }
-
-    /// Set the timeout.
-    pub fn with_timeout(mut self, secs: u64, action: TimeoutAction) -> Self {
-        self.timeout_secs = Some(secs);
-        self.timeout_action = action;
-        self
-    }
-
-    /// Set metadata.
-    pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
-        self.metadata = metadata;
-        self
-    }
-}
+// Re-export core types for convenience
+pub use xerv_core::suspension::{SuspensionRequest, TimeoutAction};
 
 /// State of a suspended trace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
