@@ -140,23 +140,86 @@ impl Default for RealHttp {
 impl HttpProvider for RealHttp {
     fn request(
         &self,
-        _method: &str,
-        _url: &str,
-        _headers: HashMap<String, String>,
-        _body: Option<Vec<u8>>,
+        method: &str,
+        url: &str,
+        headers: HashMap<String, String>,
+        body: Option<Vec<u8>>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<HttpResponse, HttpError>> + Send + '_>,
     > {
         let timeout = self.timeout;
-        // Real HTTP implementation would use hyper here with the configured timeout
-        // For now, return an error indicating it's not implemented
+        let method = method.to_string();
+        let url = url.to_string();
+
         Box::pin(async move {
-            // The timeout would be used here in a real implementation:
-            // tokio::time::timeout(timeout, actual_request).await
-            let _ = timeout; // Acknowledge timeout is available for future implementation
-            Err(HttpError::Other(
-                "Real HTTP not implemented - use MockHttp for testing".to_string(),
-            ))
+            use bytes::Bytes;
+            use http::header::HeaderName;
+            use http_body_util::{BodyExt, Full};
+            use hyper::{Method as HyperMethod, Request};
+            use hyper_util::client::legacy::Client;
+            use hyper_util::rt::TokioExecutor;
+            use std::str::FromStr;
+
+            // Parse the URL
+            let uri = url
+                .parse::<hyper::Uri>()
+                .map_err(|e| HttpError::Other(format!("Invalid URL: {}", e)))?;
+
+            // Parse the HTTP method
+            let hyper_method = HyperMethod::from_str(&method)
+                .map_err(|e| HttpError::Other(format!("Invalid HTTP method: {}", e)))?;
+
+            // Build the request
+            let mut req_builder = Request::builder().method(hyper_method).uri(uri);
+
+            // Add headers
+            for (key, value) in headers {
+                let header_name = HeaderName::from_str(&key).map_err(|e| {
+                    HttpError::Other(format!("Invalid header name '{}': {}", key, e))
+                })?;
+                req_builder = req_builder.header(header_name, value);
+            }
+
+            // Build the request body
+            let body_bytes = body.unwrap_or_default();
+            let request = req_builder
+                .body(Full::new(Bytes::from(body_bytes)))
+                .map_err(|e| HttpError::Other(format!("Failed to build request: {}", e)))?;
+
+            // Create HTTP client with connector
+            let client = Client::builder(TokioExecutor::new()).build_http();
+
+            // Execute the request with timeout
+            let response = tokio::time::timeout(timeout, client.request(request))
+                .await
+                .map_err(|_| HttpError::Timeout)?
+                .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
+
+            // Extract status
+            let status = response.status().as_u16();
+
+            // Extract headers
+            let mut response_headers = HashMap::new();
+            for (name, value) in response.headers() {
+                if let Ok(value_str) = value.to_str() {
+                    response_headers.insert(name.to_string(), value_str.to_string());
+                }
+            }
+
+            // Read the response body
+            let body_bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| HttpError::Other(format!("Failed to read response body: {}", e)))?
+                .to_bytes()
+                .to_vec();
+
+            Ok(HttpResponse {
+                status,
+                headers: response_headers,
+                body: body_bytes,
+            })
         })
     }
 

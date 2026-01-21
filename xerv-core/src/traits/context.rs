@@ -20,6 +20,7 @@ use std::sync::Arc;
 /// - Trace metadata
 /// - Logging and metrics
 /// - External providers (clock, HTTP, RNG, etc.)
+/// - Loop iteration tracking
 ///
 /// # Providers
 ///
@@ -39,6 +40,10 @@ pub struct Context {
     writer: ArenaWriter,
     /// WAL for durability.
     wal: Arc<Wal>,
+
+    // Loop iteration tracking (per node_id)
+    /// Loop iteration counts for nodes (node_id -> iteration count).
+    loop_iterations: Arc<parking_lot::Mutex<std::collections::HashMap<NodeId, u32>>>,
 
     // Providers for external dependencies
     /// Clock provider for time operations.
@@ -72,6 +77,7 @@ impl Context {
             reader,
             writer,
             wal,
+            loop_iterations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             clock: Arc::new(RealClock::new()),
             http: Arc::new(RealHttp::new()),
             rng: Arc::new(RealRng::new()),
@@ -106,6 +112,7 @@ impl Context {
             reader,
             writer,
             wal,
+            loop_iterations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             clock,
             http,
             rng,
@@ -113,6 +120,35 @@ impl Context {
             fs,
             env,
             secrets,
+        }
+    }
+
+    /// Create a context with shared loop iteration state.
+    ///
+    /// This is used when creating contexts for multiple node executions
+    /// within the same trace to share loop iteration tracking.
+    pub fn with_shared_loop_state(
+        trace_id: TraceId,
+        node_id: NodeId,
+        reader: ArenaReader,
+        writer: ArenaWriter,
+        wal: Arc<Wal>,
+        loop_iterations: Arc<parking_lot::Mutex<std::collections::HashMap<NodeId, u32>>>,
+    ) -> Self {
+        Self {
+            trace_id,
+            node_id,
+            reader,
+            writer,
+            wal,
+            loop_iterations,
+            clock: Arc::new(RealClock::new()),
+            http: Arc::new(RealHttp::new()),
+            rng: Arc::new(RealRng::new()),
+            uuid: Arc::new(RealUuid::new()),
+            fs: Arc::new(RealFs::new()),
+            env: Arc::new(RealEnv::new()),
+            secrets: Arc::new(RealSecrets::default()),
         }
     }
 
@@ -184,6 +220,43 @@ impl Context {
     /// Get the WAL handle.
     pub fn wal(&self) -> &Wal {
         &self.wal
+    }
+
+    // Loop iteration tracking
+
+    /// Get the current loop iteration count for a node.
+    ///
+    /// Returns 0 if the node has not been seen in a loop yet.
+    pub fn get_loop_iteration(&self, loop_node_id: NodeId) -> u32 {
+        self.loop_iterations
+            .lock()
+            .get(&loop_node_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Increment and return the loop iteration count for a node.
+    ///
+    /// This is called each time a loop node is executed.
+    pub fn increment_loop_iteration(&self, loop_node_id: NodeId) -> u32 {
+        let mut iterations = self.loop_iterations.lock();
+        let count = iterations.entry(loop_node_id).or_insert(0);
+        *count += 1;
+        *count
+    }
+
+    /// Reset the loop iteration count for a node.
+    ///
+    /// This is called when a loop exits to reset for potential re-entry.
+    pub fn reset_loop_iteration(&self, loop_node_id: NodeId) {
+        self.loop_iterations.lock().remove(&loop_node_id);
+    }
+
+    /// Get the shared loop iterations map (for creating child contexts).
+    pub fn loop_iterations_handle(
+        &self,
+    ) -> Arc<parking_lot::Mutex<std::collections::HashMap<NodeId, u32>>> {
+        Arc::clone(&self.loop_iterations)
     }
 
     // Provider accessors

@@ -16,6 +16,8 @@ rust-version = "1.85"
 [features]
 default = []
 # Dispatch backends
+# Note: dispatch-raft uses a trait-based approach - actual cluster integration
+# happens in xerv-executor to avoid cyclic dependencies
 dispatch-raft = []
 dispatch-redis = ["redis", "deadpool-redis"]
 dispatch-nats = ["async-nats", "futures-util"]
@@ -41,6 +43,13 @@ regex.workspace = true
 chrono.workspace = true
 log.workspace = true
 serde_json.workspace = true
+
+# HTTP client for RealHttp provider
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+http.workspace = true
+bytes.workspace = true
 
 # Random number generation (for testing framework)
 rand = "0.8"
