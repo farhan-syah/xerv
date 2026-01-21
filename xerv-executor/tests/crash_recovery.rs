@@ -56,6 +56,7 @@ async fn recovery_action_await_resume_for_suspended() {
         suspended_at: Some(NodeId::new(2)),
         started_nodes: Vec::new(),
         completed_nodes: HashMap::new(),
+        suspension_metadata: None,
     };
 
     let replayer = create_test_replayer();
@@ -77,6 +78,7 @@ async fn recovery_action_retry_nodes_for_started() {
         suspended_at: None,
         started_nodes: vec![NodeId::new(2), NodeId::new(3)],
         completed_nodes: HashMap::new(),
+        suspension_metadata: None,
     };
 
     let replayer = create_test_replayer();
@@ -98,6 +100,7 @@ async fn recovery_action_resume_from_for_completed() {
         suspended_at: None,
         started_nodes: Vec::new(),
         completed_nodes: HashMap::new(),
+        suspension_metadata: None,
     };
 
     let replayer = create_test_replayer();
@@ -119,6 +122,7 @@ async fn recovery_action_restart_for_no_progress() {
         suspended_at: None,
         started_nodes: Vec::new(),
         completed_nodes: HashMap::new(),
+        suspension_metadata: None,
     };
 
     let replayer = create_test_replayer();
@@ -158,4 +162,104 @@ async fn recovery_empty_report() {
     assert!(report.recovered.is_empty());
     assert!(report.skipped.is_empty());
     assert!(report.awaiting_resume.is_empty());
+}
+
+#[tokio::test]
+async fn recovery_parses_valid_suspension_metadata() {
+    let metadata_json =
+        r#"{"hook_id":"webhook_123","timeout_ms":30000,"reason":"waiting_for_webhook"}"#;
+
+    let state = TraceRecoveryState {
+        trace_id: TraceId::new(),
+        last_completed_node: Some(NodeId::new(1)),
+        suspended_at: Some(NodeId::new(2)),
+        started_nodes: Vec::new(),
+        completed_nodes: HashMap::new(),
+        suspension_metadata: Some(metadata_json.to_string()),
+    };
+
+    let replayer = create_test_replayer();
+    let action = replayer.determine_action(&state);
+
+    // Should recognize suspension and await resume
+    match action {
+        RecoveryAction::AwaitResume { suspended_at } => {
+            assert_eq!(suspended_at, NodeId::new(2));
+        }
+        _ => panic!("Expected AwaitResume action with valid metadata"),
+    }
+}
+
+#[tokio::test]
+async fn recovery_handles_malformed_json_metadata_gracefully() {
+    // Invalid JSON should not cause panic - should fall back to default behavior
+    let invalid_json = r#"{"hook_id":"webhook_123",invalid json here}"#;
+
+    let state = TraceRecoveryState {
+        trace_id: TraceId::new(),
+        last_completed_node: Some(NodeId::new(1)),
+        suspended_at: Some(NodeId::new(2)),
+        started_nodes: Vec::new(),
+        completed_nodes: HashMap::new(),
+        suspension_metadata: Some(invalid_json.to_string()),
+    };
+
+    let replayer = create_test_replayer();
+    let action = replayer.determine_action(&state);
+
+    // Even with malformed metadata, should still recognize suspension
+    match action {
+        RecoveryAction::AwaitResume { suspended_at } => {
+            assert_eq!(suspended_at, NodeId::new(2));
+        }
+        _ => panic!("Expected AwaitResume action even with malformed metadata"),
+    }
+}
+
+#[tokio::test]
+async fn recovery_handles_missing_suspension_metadata() {
+    // None suspension_metadata should be handled gracefully
+    let state = TraceRecoveryState {
+        trace_id: TraceId::new(),
+        last_completed_node: Some(NodeId::new(1)),
+        suspended_at: Some(NodeId::new(2)),
+        started_nodes: Vec::new(),
+        completed_nodes: HashMap::new(),
+        suspension_metadata: None,
+    };
+
+    let replayer = create_test_replayer();
+    let action = replayer.determine_action(&state);
+
+    // Should still handle suspension correctly with minimal metadata
+    match action {
+        RecoveryAction::AwaitResume { suspended_at } => {
+            assert_eq!(suspended_at, NodeId::new(2));
+        }
+        _ => panic!("Expected AwaitResume action even without metadata"),
+    }
+}
+
+#[tokio::test]
+async fn recovery_metadata_with_empty_string() {
+    // Empty string metadata should be handled gracefully
+    let state = TraceRecoveryState {
+        trace_id: TraceId::new(),
+        last_completed_node: Some(NodeId::new(1)),
+        suspended_at: Some(NodeId::new(2)),
+        started_nodes: Vec::new(),
+        completed_nodes: HashMap::new(),
+        suspension_metadata: Some(String::new()),
+    };
+
+    let replayer = create_test_replayer();
+    let action = replayer.determine_action(&state);
+
+    // Empty string should still recognize suspension
+    match action {
+        RecoveryAction::AwaitResume { suspended_at } => {
+            assert_eq!(suspended_at, NodeId::new(2));
+        }
+        _ => panic!("Expected AwaitResume action with empty metadata string"),
+    }
 }

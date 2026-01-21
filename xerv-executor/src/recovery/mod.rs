@@ -56,16 +56,43 @@ pub struct CrashReplayer {
     executor: Arc<Executor>,
     suspension_store: Option<Arc<dyn SuspensionStore>>,
     pipeline_id: String,
+    arena_dir: std::path::PathBuf,
 }
 
 impl CrashReplayer {
-    /// Create a new crash replayer.
+    /// Create a new crash replayer with default arena directory.
     pub fn new(wal: Arc<Wal>, executor: Arc<Executor>) -> Self {
         Self {
             wal,
             executor,
             suspension_store: None,
             pipeline_id: "unknown".to_string(),
+            arena_dir: std::path::PathBuf::from("/tmp/xerv"),
+        }
+    }
+
+    /// Create a crash replayer with custom arena directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `arena_dir` - Path to the arena directory (accepts &str, String, Path, PathBuf)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let replayer = CrashReplayer::with_arena_dir(wal, executor, "/var/lib/xerv/arena");
+    /// ```
+    pub fn with_arena_dir(
+        wal: Arc<Wal>,
+        executor: Arc<Executor>,
+        arena_dir: impl AsRef<std::path::Path>,
+    ) -> Self {
+        Self {
+            wal,
+            executor,
+            suspension_store: None,
+            pipeline_id: "unknown".to_string(),
+            arena_dir: arena_dir.as_ref().to_path_buf(),
         }
     }
 
@@ -81,7 +108,24 @@ impl CrashReplayer {
             executor,
             suspension_store: Some(suspension_store),
             pipeline_id: pipeline_id.into(),
+            arena_dir: std::path::PathBuf::from("/tmp/xerv"),
         }
+    }
+
+    /// Set the arena directory path.
+    /// Set the arena directory for recovery operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `arena_dir` - Path to the arena directory (accepts &str, String, Path, PathBuf)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// replayer.set_arena_dir("/var/lib/xerv/arena");
+    /// ```
+    pub fn set_arena_dir(&mut self, arena_dir: impl AsRef<std::path::Path>) {
+        self.arena_dir = arena_dir.as_ref().to_path_buf();
     }
 
     /// Recover all incomplete traces on startup.
@@ -277,19 +321,65 @@ impl CrashReplayer {
         &self,
         trace_id: TraceId,
         suspended_at: NodeId,
-        _state: &TraceRecoveryState,
+        state: &TraceRecoveryState,
         store: &Arc<dyn SuspensionStore>,
     ) -> Result<()> {
-        // Get the arena path
-        let arena_dir = std::path::PathBuf::from("/tmp/xerv");
-        let arena_path = arena_dir.join(format!("trace_{}.bin", trace_id.as_uuid()));
+        // Get the arena path from configuration
+        let arena_path = self
+            .arena_dir
+            .join(format!("trace_{}.bin", trace_id.as_uuid()));
 
-        // Create a hook ID based on the trace ID (we don't have the original hook_id
-        // stored in TraceRecoveryState, so we generate one based on trace_id)
-        let hook_id = format!("recovered_{}", trace_id.as_uuid());
+        // Parse suspension metadata from WAL record
+        let (hook_id, metadata) = if let Some(ref metadata_json) = state.suspension_metadata {
+            // Parse the JSON metadata from the WAL record
+            match serde_json::from_str::<serde_json::Value>(metadata_json) {
+                Ok(mut parsed) => {
+                    let hook_id = parsed
+                        .get("hook_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&format!("recovered_{}", trace_id.as_uuid()))
+                        .to_string();
 
-        // Create suspended state with minimal info
-        // In a full implementation, we'd parse metadata from WAL records
+                    // Add recovery marker to existing metadata
+                    if let Some(obj) = parsed.as_object_mut() {
+                        obj.insert("recovered".to_string(), serde_json::json!(true));
+                        obj.insert(
+                            "recovery_time".to_string(),
+                            serde_json::json!(chrono::Utc::now().to_rfc3339()),
+                        );
+                    }
+
+                    (hook_id, parsed)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to parse suspension metadata, using fallback"
+                    );
+                    // Fallback to generated hook_id and minimal metadata
+                    (
+                        format!("recovered_{}", trace_id.as_uuid()),
+                        serde_json::json!({
+                            "recovered": true,
+                            "recovery_time": chrono::Utc::now().to_rfc3339(),
+                            "metadata_parse_error": e.to_string(),
+                        }),
+                    )
+                }
+            }
+        } else {
+            // No metadata in WAL, use minimal fallback
+            (
+                format!("recovered_{}", trace_id.as_uuid()),
+                serde_json::json!({
+                    "recovered": true,
+                    "recovery_time": chrono::Utc::now().to_rfc3339(),
+                    "note": "No suspension metadata found in WAL",
+                }),
+            )
+        };
+
+        // Create suspended state with parsed metadata
         let suspended = SuspendedTraceState::new(
             &hook_id,
             trace_id,
@@ -297,10 +387,7 @@ impl CrashReplayer {
             arena_path,
             &self.pipeline_id,
         )
-        .with_metadata(serde_json::json!({
-            "recovered": true,
-            "recovery_time": chrono::Utc::now().to_rfc3339(),
-        }));
+        .with_metadata(metadata);
 
         // Store in suspension store
         store.suspend(suspended)
@@ -308,10 +395,10 @@ impl CrashReplayer {
 
     /// Load the arena file for a trace from disk.
     fn load_arena(&self, trace_id: TraceId) -> Result<xerv_core::arena::Arena> {
-        // The arena directory is typically the same as WAL directory's parent
-        // or can be configured. For now, use a standard location.
-        let arena_dir = std::path::PathBuf::from("/tmp/xerv");
-        let arena_path = arena_dir.join(format!("trace_{}.bin", trace_id.as_uuid()));
+        // Use the configured arena directory
+        let arena_path = self
+            .arena_dir
+            .join(format!("trace_{}.bin", trace_id.as_uuid()));
 
         if !arena_path.exists() {
             return Err(XervError::ArenaCreate {
@@ -412,6 +499,7 @@ mod tests {
             suspended_at: Some(NodeId::new(2)),
             started_nodes: Vec::new(),
             completed_nodes: HashMap::new(),
+            suspension_metadata: Some(r#"{"hook_id":"test_hook","timeout_ms":30000}"#.to_string()),
         };
 
         let wal = Arc::new(Wal::open(WalConfig::in_memory()).unwrap());
@@ -449,6 +537,7 @@ mod tests {
             suspended_at: None,
             started_nodes: vec![NodeId::new(2), NodeId::new(3)],
             completed_nodes: HashMap::new(),
+            suspension_metadata: None,
         };
 
         let wal = Arc::new(Wal::open(WalConfig::in_memory()).unwrap());
@@ -486,6 +575,7 @@ mod tests {
             suspended_at: None,
             started_nodes: Vec::new(),
             completed_nodes: HashMap::new(),
+            suspension_metadata: None,
         };
 
         let wal = Arc::new(Wal::open(WalConfig::in_memory()).unwrap());

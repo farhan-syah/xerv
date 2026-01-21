@@ -408,6 +408,7 @@ impl SnapshotManager {
                     suspended_at: state.suspended_at,
                     started_nodes: state.started_nodes.clone(),
                     completed_nodes,
+                    suspension_metadata: None,
                 };
 
                 (*tid, recovery_state)
@@ -448,6 +449,7 @@ mod tests {
             suspended_at: None,
             started_nodes: vec![],
             completed_nodes: HashMap::new(),
+            suspension_metadata: None,
         };
         state.completed_nodes.insert(
             node_id,

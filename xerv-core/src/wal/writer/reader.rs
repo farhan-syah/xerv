@@ -183,6 +183,7 @@ impl WalReader {
                         suspended_at: None,
                         started_nodes: Vec::new(),
                         completed_nodes: HashMap::new(),
+                        suspension_metadata: None,
                     },
                 );
             }
@@ -212,6 +213,7 @@ impl WalReader {
             WalRecordType::TraceSuspended => {
                 if let Some(state) = traces.get_mut(&record.trace_id) {
                     state.suspended_at = Some(record.node_id);
+                    state.suspension_metadata = record.metadata.clone();
                 }
             }
             WalRecordType::TraceResumed => {
@@ -237,6 +239,11 @@ pub struct TraceRecoveryState {
     pub started_nodes: Vec<NodeId>,
     /// Map of completed nodes to their output locations in the arena.
     pub completed_nodes: HashMap<NodeId, NodeOutputLocation>,
+    /// Suspension metadata (JSON) from TraceSuspended WAL record.
+    ///
+    /// Contains hook_id, timeout settings, and other suspension context
+    /// needed to properly restore a suspended trace.
+    pub suspension_metadata: Option<String>,
 }
 
 /// Location of a node's output in the arena.
