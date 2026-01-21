@@ -27,10 +27,13 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod audit;
 pub mod controller;
 pub mod crd;
 pub mod error;
 pub mod resources;
+pub mod secret_watcher;
+pub mod security;
 
 pub use crd::{XervCluster, XervClusterSpec, XervPipeline, XervPipelineSpec};
 pub use error::{OperatorError, OperatorResult};

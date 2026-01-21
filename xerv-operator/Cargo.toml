@@ -56,9 +56,30 @@ schemars = "0.8"
 # Logging
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Base64 encoding for basic auth
+base64 = "0.22"
+
+# TLS/mTLS support
+rustls = "0.23"
+rustls-pemfile = "2.2"
+webpki-roots = "0.26"
+
+# Regex for secret pattern matching
+regex = "1"
+
+# Additional dependencies for webhook server
+tokio-rustls = "0.26"
+
+# Audit logging
+once_cell = "1"
+
 [[bin]]
 name = "xerv-operator"
 path = "src/bin/operator.rs"
+
+[[bin]]
+name = "xerv-operator-webhook"
+path = "src/bin/webhook.rs"
 
 [dev-dependencies]
 tempfile = "3.24"
