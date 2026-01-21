@@ -212,18 +212,58 @@ impl fmt::Display for PortId {
     }
 }
 
-/// Parse a port reference string like "node_name.port_name".
+/// Parse a port reference string like "node_5.port_name".
+///
+/// # Format
+/// The string must be in the format `node_<id>.<port_name>` where:
+/// - `<id>` is a numeric node identifier
+/// - `<port_name>` is the port name (can contain dots)
+///
+/// # Examples
+/// ```
+/// use xerv_core::types::{PortId, NodeId};
+/// use std::str::FromStr;
+///
+/// let port = PortId::from_str("node_5.out").unwrap();
+/// assert_eq!(port.node, NodeId::new(5));
+/// assert_eq!(port.name, "out");
+///
+/// let port = PortId::from_str("node_42.data.result").unwrap();
+/// assert_eq!(port.node, NodeId::new(42));
+/// assert_eq!(port.name, "data.result");
+/// ```
 impl std::str::FromStr for PortId {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.splitn(2, '.').collect();
         if parts.len() != 2 {
-            return Err("Port ID must be in format 'node.port'");
+            return Err("Port ID must be in format 'node_<id>.<port_name>'");
         }
-        // For now, we can't resolve node names to IDs without context
-        // This is a placeholder implementation
-        Err("Port ID parsing requires flow context")
+
+        let node_str = parts[0];
+        let port_name = parts[1];
+
+        // Validate port name is not empty
+        if port_name.is_empty() {
+            return Err("Port name cannot be empty");
+        }
+
+        // Parse "node_5" format
+        if !node_str.starts_with("node_") {
+            return Err("Node ID must start with 'node_'");
+        }
+
+        let id_str = &node_str[5..]; // Skip "node_" prefix
+        if id_str.is_empty() {
+            return Err("Node ID number is missing");
+        }
+
+        let node_id = id_str
+            .parse::<u32>()
+            .map_err(|_| "Invalid node ID number")?;
+
+        Ok(PortId::new(NodeId::new(node_id), port_name))
     }
 }
 
@@ -271,6 +311,91 @@ mod tests {
     fn port_id_display() {
         let port = PortId::new(NodeId::new(5), "error");
         assert_eq!(format!("{}", port), "node_5.error");
+    }
+
+    #[test]
+    fn port_id_parse_basic() {
+        use std::str::FromStr;
+        let port = PortId::from_str("node_5.out").unwrap();
+        assert_eq!(port.node, NodeId::new(5));
+        assert_eq!(port.name, "out");
+    }
+
+    #[test]
+    fn port_id_parse_with_dots_in_name() {
+        use std::str::FromStr;
+        let port = PortId::from_str("node_42.data.result").unwrap();
+        assert_eq!(port.node, NodeId::new(42));
+        assert_eq!(port.name, "data.result");
+    }
+
+    #[test]
+    fn port_id_parse_large_id() {
+        use std::str::FromStr;
+        let port = PortId::from_str("node_999999.output").unwrap();
+        assert_eq!(port.node, NodeId::new(999999));
+        assert_eq!(port.name, "output");
+    }
+
+    #[test]
+    fn port_id_parse_roundtrip() {
+        use std::str::FromStr;
+        let original = PortId::new(NodeId::new(123), "result");
+        let string = format!("{}", original);
+        let parsed = PortId::from_str(&string).unwrap();
+        assert_eq!(parsed.node, original.node);
+        assert_eq!(parsed.name, original.name);
+    }
+
+    #[test]
+    fn port_id_parse_missing_dot() {
+        use std::str::FromStr;
+        let result = PortId::from_str("node_5");
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "Port ID must be in format 'node_<id>.<port_name>'"
+        );
+    }
+
+    #[test]
+    fn port_id_parse_empty_port_name() {
+        use std::str::FromStr;
+        let result = PortId::from_str("node_5.");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Port name cannot be empty");
+    }
+
+    #[test]
+    fn port_id_parse_missing_node_prefix() {
+        use std::str::FromStr;
+        let result = PortId::from_str("5.out");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Node ID must start with 'node_'");
+    }
+
+    #[test]
+    fn port_id_parse_invalid_node_id() {
+        use std::str::FromStr;
+        let result = PortId::from_str("node_abc.out");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Invalid node ID number");
+    }
+
+    #[test]
+    fn port_id_parse_empty_node_id() {
+        use std::str::FromStr;
+        let result = PortId::from_str("node_.out");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Node ID number is missing");
+    }
+
+    #[test]
+    fn port_id_parse_negative_node_id() {
+        use std::str::FromStr;
+        let result = PortId::from_str("node_-5.out");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Invalid node ID number");
     }
 
     #[test]

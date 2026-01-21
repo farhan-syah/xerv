@@ -403,15 +403,80 @@ impl DispatchBackend for NatsDispatch {
     ) -> DispatchFuture<'_, Vec<TraceId>> {
         let pipeline_id = pipeline_id.clone();
         Box::pin(async move {
-            // NATS doesn't easily support filtering by content
-            // Would need to iterate all messages, which is expensive
-            // For now, return our in-flight messages for this pipeline
-            let in_flight = self.in_flight.lock();
-            let traces: Vec<TraceId> = in_flight
-                .iter()
-                .filter(|(_, msg)| msg.request.pipeline_id == pipeline_id)
-                .map(|(id, _)| *id)
-                .collect();
+            // This is expensive - only for monitoring
+            let mut traces = Vec::new();
+
+            // First, collect in-flight messages for this pipeline
+            {
+                let in_flight = self.in_flight.lock();
+                traces.extend(
+                    in_flight
+                        .iter()
+                        .filter(|(_, msg)| msg.request.pipeline_id == pipeline_id)
+                        .map(|(id, _)| *id),
+                );
+            }
+
+            // If JetStream is enabled, query the stream for pending messages
+            if self.config.use_jetstream {
+                // Get the stream (requires async lock)
+                let stream_guard = self.stream.lock().await;
+                if let Some(ref stream) = *stream_guard {
+                    // Get stream info to know the range of messages
+                    let info = stream
+                        .info()
+                        .await
+                        .map_err(|e| DispatchError::BackendError(e.to_string()))?;
+
+                    let first_seq = info.state.first_sequence;
+                    let last_seq = info.state.last_sequence;
+
+                    // Limit the number of messages to scan for safety
+                    const MAX_SCAN: u64 = 1000;
+                    let scan_count = (last_seq - first_seq + 1).min(MAX_SCAN);
+
+                    // Start from the most recent messages (more likely to be pending)
+                    let start_seq = last_seq.saturating_sub(scan_count - 1).max(first_seq);
+
+                    // Fetch messages by sequence number
+                    for seq in start_seq..=last_seq {
+                        // Get message by sequence (this is a direct stream access)
+                        match stream.get_raw_message(seq).await {
+                            Ok(raw_msg) => {
+                                // Deserialize the message payload
+                                match Self::deserialize_request(&raw_msg.payload) {
+                                    Ok(request) => {
+                                        // Filter by pipeline_id
+                                        if request.pipeline_id == pipeline_id {
+                                            // Check if not already in our traces list (avoid duplicates)
+                                            if !traces.contains(&request.trace_id) {
+                                                traces.push(request.trace_id);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // Log deserialization error but continue
+                                        tracing::warn!(
+                                            sequence = seq,
+                                            error = %e,
+                                            "Failed to deserialize message from stream"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                // Message might have been deleted/expired
+                                tracing::debug!(
+                                    sequence = seq,
+                                    error = %e,
+                                    "Failed to get message from stream (likely deleted)"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             Ok(traces)
         })
     }
@@ -449,6 +514,130 @@ mod tests {
 
         // Ack
         dispatch.ack(trace_id).await.unwrap();
+
+        dispatch.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn nats_dispatch_get_pending_by_pipeline() {
+        let config = NatsConfig::new("nats://localhost:4222")
+            .with_jetstream()
+            .stream_name("XERV_TEST_PENDING");
+
+        let dispatch = NatsDispatch::new(config).await.unwrap();
+
+        let pipeline1 = PipelineId::new("pipeline1", 1);
+        let pipeline2 = PipelineId::new("pipeline2", 1);
+
+        // Enqueue multiple traces for different pipelines
+        let trace1 = TraceId::new();
+        let trace2 = TraceId::new();
+        let trace3 = TraceId::new();
+
+        dispatch
+            .enqueue(TraceRequest::new(
+                trace1,
+                pipeline1.clone(),
+                "trigger",
+                vec![],
+            ))
+            .await
+            .unwrap();
+
+        dispatch
+            .enqueue(TraceRequest::new(
+                trace2,
+                pipeline1.clone(),
+                "trigger",
+                vec![],
+            ))
+            .await
+            .unwrap();
+
+        dispatch
+            .enqueue(TraceRequest::new(
+                trace3,
+                pipeline2.clone(),
+                "trigger",
+                vec![],
+            ))
+            .await
+            .unwrap();
+
+        // Give JetStream time to persist messages
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Get pending traces for pipeline1
+        let pending1 = dispatch.get_pending_by_pipeline(&pipeline1).await.unwrap();
+        assert_eq!(pending1.len(), 2);
+        assert!(pending1.contains(&trace1));
+        assert!(pending1.contains(&trace2));
+        assert!(!pending1.contains(&trace3));
+
+        // Get pending traces for pipeline2
+        let pending2 = dispatch.get_pending_by_pipeline(&pipeline2).await.unwrap();
+        assert_eq!(pending2.len(), 1);
+        assert!(pending2.contains(&trace3));
+        assert!(!pending2.contains(&trace1));
+        assert!(!pending2.contains(&trace2));
+
+        // Dequeue and ack one trace from pipeline1
+        let dequeued = dispatch.dequeue(5000).await.unwrap();
+        assert!(dequeued.is_some());
+        let dequeued_trace = dequeued.unwrap().trace_id;
+        dispatch.ack(dequeued_trace).await.unwrap();
+
+        // Give JetStream time to process ack
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Check pending again - should have one less for pipeline1
+        let pending1_after = dispatch.get_pending_by_pipeline(&pipeline1).await.unwrap();
+        assert_eq!(pending1_after.len(), 1);
+        assert!(!pending1_after.contains(&dequeued_trace));
+
+        dispatch.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn nats_dispatch_get_pending_includes_in_flight() {
+        let config = NatsConfig::new("nats://localhost:4222")
+            .with_jetstream()
+            .stream_name("XERV_TEST_IN_FLIGHT");
+
+        let dispatch = NatsDispatch::new(config).await.unwrap();
+
+        let pipeline = PipelineId::new("test_pipeline", 1);
+        let trace_id = TraceId::new();
+
+        // Enqueue a trace
+        dispatch
+            .enqueue(TraceRequest::new(
+                trace_id,
+                pipeline.clone(),
+                "trigger",
+                vec![],
+            ))
+            .await
+            .unwrap();
+
+        // Dequeue (puts it in-flight but don't ack yet)
+        let dequeued = dispatch.dequeue(5000).await.unwrap();
+        assert!(dequeued.is_some());
+        assert_eq!(dequeued.unwrap().trace_id, trace_id);
+
+        // Get pending - should include the in-flight trace
+        let pending = dispatch.get_pending_by_pipeline(&pipeline).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains(&trace_id));
+
+        // Ack the trace
+        dispatch.ack(trace_id).await.unwrap();
+
+        // Get pending again - should be empty now
+        let pending_after = dispatch.get_pending_by_pipeline(&pipeline).await.unwrap();
+        assert_eq!(pending_after.len(), 0);
 
         dispatch.shutdown().await.unwrap();
     }
