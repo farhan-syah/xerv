@@ -163,46 +163,66 @@ impl Node for SplitNode {
                 return Ok(NodeOutput::new("done", input));
             }
 
-            // For now, we emit the first item and store iteration state
-            // In a full implementation, the executor would handle the iteration
-            // by tracking state and re-invoking the split node for each item.
-            //
-            // The split node emits on "out" for each item, then "done" at the end.
-            // Current simplified implementation: emit first item with metadata
-            // indicating total count for the executor to handle.
+            // Get current iteration index from context (using loop iteration tracking)
+            let split_node_id = ctx.node_id();
+            let iteration = ctx.get_loop_iteration(split_node_id) as usize;
 
-            let first_item = Value::from(items[0].clone());
-            let item_bytes = match first_item.to_bytes() {
+            tracing::debug!(
+                field = %self.field,
+                iteration = iteration,
+                total_items = items.len(),
+                mode = ?self.mode,
+                "Split: processing iteration"
+            );
+
+            // Check if we've emitted all items
+            if iteration >= items.len() {
+                // All items emitted, reset iteration counter and emit done
+                ctx.reset_loop_iteration(split_node_id);
+                tracing::debug!(
+                    field = %self.field,
+                    total_items = items.len(),
+                    "Split: all items emitted, sending done"
+                );
+                return Ok(NodeOutput::new("done", input));
+            }
+
+            // Emit the current item
+            let current_item = Value::from(items[iteration].clone());
+            let item_bytes = match current_item.to_bytes() {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     return Ok(NodeOutput::error_with_message(format!(
-                        "Failed to serialize item: {}",
-                        e
+                        "Failed to serialize item at index {}: {}",
+                        iteration, e
                     )));
                 }
             };
 
-            // Write the first item to arena
+            // Write the current item to arena
             let item_ptr = match ctx.write_bytes(&item_bytes) {
                 Ok(ptr) => ptr,
                 Err(e) => {
                     return Ok(NodeOutput::error_with_message(format!(
-                        "Failed to write item: {}",
-                        e
+                        "Failed to write item at index {}: {}",
+                        iteration, e
                     )));
                 }
             };
 
+            // Increment iteration counter for next invocation
+            ctx.increment_loop_iteration(split_node_id);
+
             tracing::debug!(
                 field = %self.field,
+                iteration = iteration,
                 total_items = items.len(),
-                mode = ?self.mode,
-                "Split: emitting first item"
+                "Split: emitting item {}/{}", iteration + 1, items.len()
             );
 
-            // Emit the first item
-            // The executor is responsible for tracking iteration and calling
-            // this node again for subsequent items, or spawning parallel traces.
+            // Emit the current item on "out" port
+            // The executor will see this output and should re-invoke the split node
+            // to process the next item, or execute downstream nodes first depending on mode
             Ok(NodeOutput::new("out", item_ptr))
         })
     }

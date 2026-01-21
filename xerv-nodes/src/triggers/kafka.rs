@@ -33,6 +33,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use xerv_core::error::{Result, XervError};
 use xerv_core::traits::{Trigger, TriggerConfig, TriggerEvent, TriggerFuture, TriggerType};
+
+// RelPtr is only used in kafka-specific code (message_to_event method).
+// Import it conditionally to avoid unused import warnings when kafka feature is disabled.
+#[cfg(feature = "kafka")]
 use xerv_core::types::RelPtr;
 
 #[cfg(feature = "kafka")]
