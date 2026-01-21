@@ -2,12 +2,17 @@
 //!
 //! Reconciles FederatedPipeline resources to deploy pipelines across federated clusters.
 
+use super::secret_extraction::SecretExtractor;
+use super::status_metrics::StatusFormatter;
 use super::{ControllerContext, ReconcileAction};
 use crate::crd::{
     ClusterPipelineStatus, FederatedPipeline, FederatedPipelineCondition, FederatedPipelineStatus,
-    RolloutStrategy, SyncStatus, XervFederation,
+    FederationMember, RolloutStrategy, SyncStatus, XervFederation,
 };
 use crate::error::{OperatorError, OperatorResult};
+use crate::security::{
+    AuthenticatedHttpClient, Credentials, CredentialsResolver, SecretDistributor,
+};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
@@ -26,6 +31,46 @@ impl FederatedPipelineController {
     /// Create a new federated pipeline controller.
     pub fn new(ctx: Arc<ControllerContext>) -> Self {
         Self { ctx }
+    }
+
+    /// Find a cluster in a federation by name.
+    ///
+    /// This helper method avoids code duplication by providing a single
+    /// location for cluster lookup logic. Returns an error status if the
+    /// cluster is not found in the federation.
+    ///
+    /// # Arguments
+    ///
+    /// * `cluster_name` - Name of the cluster to find
+    /// * `federation` - Federation to search in
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(&FederationMember)` - Cluster found, returns reference
+    /// - `Err(ClusterPipelineStatus)` - Cluster not found, returns error status for reporting
+    fn find_cluster_or_error<'a>(
+        cluster_name: &str,
+        federation: &'a XervFederation,
+    ) -> Result<&'a FederationMember, ClusterPipelineStatus> {
+        federation
+            .spec
+            .clusters
+            .iter()
+            .find(|c| c.name == cluster_name)
+            .ok_or_else(|| ClusterPipelineStatus {
+                cluster: cluster_name.to_string(),
+                deployed: false,
+                synced: false,
+                generation: 0,
+                status: "NotFound".to_string(),
+                active_traces: 0,
+                last_deployed: None,
+                error: Some(format!(
+                    "Cluster '{}' not found in federation '{}'",
+                    cluster_name,
+                    federation.name_any()
+                )),
+            })
     }
 
     /// Reconcile a FederatedPipeline resource.
@@ -199,30 +244,20 @@ impl FederatedPipelineController {
             }
         };
 
-        // Check if all clusters are synced
-        let deployed_count = cluster_statuses.iter().filter(|s| s.deployed).count() as i32;
-        let synced_count = cluster_statuses.iter().filter(|s| s.synced).count() as i32;
-        let total_count = cluster_statuses.len() as i32;
+        // Compute aggregate metrics for richer status reporting
+        let formatter = StatusFormatter::new();
+        let metrics = formatter.compute_metrics(&cluster_statuses);
 
-        let (status, message) = if synced_count == total_count {
-            (
-                SyncStatus::Synced,
-                format!("Pipeline synced to all {} clusters", total_count),
-            )
-        } else if deployed_count > 0 {
-            (
-                SyncStatus::Syncing,
-                format!(
-                    "Syncing: {}/{} clusters deployed, {}/{} synced",
-                    deployed_count, total_count, synced_count, total_count
-                ),
-            )
+        let (status, message) = if metrics.synced_clusters == metrics.total_clusters {
+            (SyncStatus::Synced, formatter.format_message(&metrics))
+        } else if metrics.deployed_clusters > 0 {
+            (SyncStatus::Syncing, formatter.format_message(&metrics))
         } else {
-            (
-                SyncStatus::Failed,
-                "Failed to deploy to any cluster".to_string(),
-            )
+            (SyncStatus::Failed, formatter.format_message(&metrics))
         };
+
+        let deployed_count = metrics.deployed_clusters as i32;
+        let total_count = metrics.total_clusters as i32;
 
         // Update status
         self.update_status(
@@ -317,11 +352,12 @@ impl FederatedPipelineController {
             .verify_pipeline_on_clusters(pipeline, &target_clusters, federation)
             .await;
 
+        // Compute aggregate metrics
+        let formatter = StatusFormatter::new();
+        let metrics = formatter.compute_metrics(&cluster_statuses);
+
         // Check if any clusters are out of sync
-        let out_of_sync_count = cluster_statuses
-            .iter()
-            .filter(|s| !s.synced || !s.deployed)
-            .count();
+        let out_of_sync_count = metrics.total_clusters - metrics.synced_clusters;
 
         let out_of_sync_clusters: Vec<String> = cluster_statuses
             .iter()
@@ -334,21 +370,18 @@ impl FederatedPipelineController {
                 pipeline = %name,
                 out_of_sync_count = out_of_sync_count,
                 clusters = ?out_of_sync_clusters,
+                success_rate = metrics.success_rate,
                 "Some clusters are out of sync"
             );
 
-            // Update status to out of sync
+            // Update status to out of sync with detailed metrics
             self.update_status(
                 api,
                 &name,
                 FederatedPipelineStatus {
                     sync_status: SyncStatus::OutOfSync,
                     cluster_statuses,
-                    message: Some(format!(
-                        "{}/{} clusters out of sync",
-                        out_of_sync_count,
-                        target_clusters.len()
-                    )),
+                    message: Some(formatter.format_message(&metrics)),
                     last_updated: Some(chrono::Utc::now().to_rfc3339()),
                     ..pipeline.status.clone().unwrap_or_default()
                 },
@@ -359,16 +392,22 @@ impl FederatedPipelineController {
         }
 
         // All clusters are synced - update status with fresh cluster info
-        let synced_count = cluster_statuses.len() as i32;
+        tracing::info!(
+            pipeline = %name,
+            clusters = metrics.total_clusters,
+            success_rate = metrics.success_rate,
+            "All clusters in sync"
+        );
+
         self.update_status(
             api,
             &name,
             FederatedPipelineStatus {
                 sync_status: SyncStatus::Synced,
-                deployed_clusters: synced_count,
-                target_clusters: synced_count,
+                deployed_clusters: metrics.synced_clusters as i32,
+                target_clusters: metrics.total_clusters as i32,
                 cluster_statuses,
-                message: Some(format!("All {} clusters in sync", synced_count)),
+                message: Some(formatter.format_message(&metrics)),
                 last_updated: Some(chrono::Utc::now().to_rfc3339()),
                 ..pipeline.status.clone().unwrap_or_default()
             },
@@ -662,36 +701,45 @@ impl FederatedPipelineController {
         federation: &XervFederation,
     ) -> ClusterPipelineStatus {
         let name = pipeline.name_any();
+        let namespace = pipeline.namespace().unwrap_or_default();
+
         tracing::debug!(
             pipeline = %name,
             cluster = %cluster_name,
             "Verifying pipeline state on cluster"
         );
 
-        // Get cluster endpoint from federation
-        let endpoint = match self.get_cluster_endpoint(cluster_name, federation) {
-            Some(ep) => ep,
-            None => {
-                // Cluster not found in federation
-                return ClusterPipelineStatus {
-                    cluster: cluster_name.to_string(),
-                    deployed: false,
-                    synced: false,
-                    generation: 0,
-                    status: "NotFound".to_string(),
-                    active_traces: 0,
-                    last_deployed: None,
-                    error: Some(format!(
-                        "Cluster '{}' not found in federation '{}'",
-                        cluster_name,
-                        federation.name_any()
-                    )),
-                };
+        // Get cluster configuration from federation
+        let cluster = match Self::find_cluster_or_error(cluster_name, federation) {
+            Ok(c) => c,
+            Err(error_status) => return error_status,
+        };
+
+        let endpoint = &cluster.endpoint;
+
+        // Resolve credentials if specified
+        let credentials = if let Some(secret_name) = cluster.credentials_secret.as_ref() {
+            let resolver = CredentialsResolver::new(self.ctx.client.clone());
+            match resolver.resolve(secret_name, &namespace).await {
+                Ok(creds) => Some(creds),
+                Err(e) => {
+                    tracing::warn!(
+                        cluster = %cluster_name,
+                        error = %e,
+                        "Failed to resolve credentials for status check"
+                    );
+                    None
+                }
             }
+        } else {
+            None
         };
 
         // Query pipeline status via HTTP GET
-        match self.http_get_pipeline_status(&endpoint, &name).await {
+        match self
+            .http_get_pipeline_status(endpoint, &name, credentials.as_ref())
+            .await
+        {
             Ok(status) => status,
             Err(e) => {
                 tracing::warn!(
@@ -715,10 +763,13 @@ impl FederatedPipelineController {
     }
 
     /// Get pipeline status from cluster via HTTP GET.
+    ///
+    /// Injects authentication credentials if provided.
     async fn http_get_pipeline_status(
         &self,
         endpoint: &str,
         pipeline_name: &str,
+        credentials: Option<&Credentials>,
     ) -> Result<ClusterPipelineStatus, OperatorError> {
         let url = format!("{}/api/v1/pipelines/{}/status", endpoint, pipeline_name);
 
@@ -747,6 +798,14 @@ impl FederatedPipelineController {
             .header("Accept", "application/json")
             .body(http_body_util::Empty::<Bytes>::new())
             .map_err(|e| OperatorError::HealthCheck(format!("Failed to build request: {}", e)))?;
+
+        // Inject authentication if credentials provided
+        let req = if let Some(creds) = credentials {
+            let auth_client = AuthenticatedHttpClient::with_credentials(creds.clone());
+            auth_client.inject_auth(req)
+        } else {
+            req
+        };
 
         // Connect
         let stream = tokio::net::TcpStream::connect(&addr).await.map_err(|e| {
@@ -821,6 +880,7 @@ impl FederatedPipelineController {
     ///
     /// Makes an HTTP POST request to the cluster's pipeline deploy endpoint.
     /// The cluster endpoint is retrieved from the federation spec.
+    /// Credentials are resolved from the cluster's credentials_secret if specified.
     async fn deploy_to_cluster(
         &self,
         pipeline: &FederatedPipeline,
@@ -828,32 +888,111 @@ impl FederatedPipelineController {
         federation: &XervFederation,
     ) -> ClusterPipelineStatus {
         let name = pipeline.name_any();
+        let namespace = pipeline.namespace().unwrap_or_default();
+
         tracing::info!(
             pipeline = %name,
             cluster = %cluster_name,
             "Deploying pipeline to cluster"
         );
 
-        // Get cluster endpoint from federation spec
-        let endpoint = match self.get_cluster_endpoint(cluster_name, federation) {
-            Some(ep) => ep,
-            None => {
-                return ClusterPipelineStatus {
-                    cluster: cluster_name.to_string(),
-                    deployed: false,
-                    synced: false,
-                    generation: 0,
-                    status: "Failed".to_string(),
-                    active_traces: 0,
-                    last_deployed: None,
-                    error: Some(format!(
-                        "Cluster '{}' not found in federation '{}'",
-                        cluster_name,
-                        federation.name_any()
-                    )),
-                };
+        // Get cluster configuration from federation spec
+        let cluster = match Self::find_cluster_or_error(cluster_name, federation) {
+            Ok(c) => c,
+            Err(mut error_status) => {
+                // Override status to "Failed" for deployment context
+                error_status.status = "Failed".to_string();
+                return error_status;
             }
         };
+
+        let endpoint = cluster.endpoint.clone();
+
+        // Resolve credentials if specified
+        let credentials = if let Some(secret_name) = cluster.credentials_secret.as_ref() {
+            let resolver = CredentialsResolver::new(self.ctx.client.clone());
+            match resolver.resolve(secret_name, &namespace).await {
+                Ok(creds) => {
+                    tracing::debug!(
+                        cluster = %cluster_name,
+                        secret = %secret_name,
+                        "Resolved cluster credentials"
+                    );
+                    Some(creds)
+                }
+                Err(e) => {
+                    tracing::error!(
+                        cluster = %cluster_name,
+                        secret = %secret_name,
+                        error = %e,
+                        "Failed to resolve credentials"
+                    );
+                    return ClusterPipelineStatus {
+                        cluster: cluster_name.to_string(),
+                        deployed: false,
+                        synced: false,
+                        generation: 0,
+                        status: "Failed".to_string(),
+                        active_traces: 0,
+                        last_deployed: None,
+                        error: Some(format!("Failed to resolve credentials: {}", e)),
+                    };
+                }
+            }
+        } else {
+            None
+        };
+
+        // Extract secret references from pipeline definition and overrides
+        let extractor = SecretExtractor::new();
+        let mut secret_refs = extractor.extract_from_pipeline(&pipeline.spec.pipeline);
+
+        // Also extract secrets from cluster-specific overrides
+        let cluster_overrides: Vec<_> = pipeline
+            .spec
+            .overrides
+            .iter()
+            .filter(|o| o.cluster == cluster_name)
+            .cloned()
+            .collect();
+
+        secret_refs.extend(extractor.extract_from_overrides(&cluster_overrides));
+        secret_refs.sort();
+        secret_refs.dedup();
+
+        // Distribute secrets to remote cluster
+        if !secret_refs.is_empty() {
+            tracing::info!(
+                pipeline = %name,
+                cluster = %cluster_name,
+                secrets = ?secret_refs,
+                "Distributing {} secrets to remote cluster",
+                secret_refs.len()
+            );
+
+            let distributor = SecretDistributor::new(self.ctx.client.clone());
+            for secret_name in &secret_refs {
+                if let Err(e) = distributor
+                    .distribute_secret(
+                        secret_name,
+                        &namespace,
+                        &endpoint,
+                        &namespace,
+                        credentials.as_ref(),
+                    )
+                    .await
+                {
+                    tracing::error!(
+                        secret = %secret_name,
+                        cluster = %cluster_name,
+                        error = %e,
+                        "Failed to distribute secret"
+                    );
+                    // Continue with other secrets - don't fail the entire deployment
+                    // The pipeline deployment will fail if the secret is actually needed
+                }
+            }
+        }
 
         // Serialize pipeline spec
         let payload = match serde_json::to_vec(&pipeline.spec.pipeline) {
@@ -873,7 +1012,10 @@ impl FederatedPipelineController {
         };
 
         // Deploy via HTTP POST
-        match self.http_deploy(&endpoint, &name, payload).await {
+        match self
+            .http_deploy(&endpoint, &name, payload, credentials.as_ref())
+            .await
+        {
             Ok(()) => ClusterPipelineStatus {
                 cluster: cluster_name.to_string(),
                 deployed: true,
@@ -905,48 +1047,15 @@ impl FederatedPipelineController {
         }
     }
 
-    /// Get cluster endpoint from the federation spec.
-    ///
-    /// Looks up the cluster by name in the federation's cluster list and returns
-    /// the endpoint URL if the cluster is found and enabled.
-    fn get_cluster_endpoint(
-        &self,
-        cluster_name: &str,
-        federation: &XervFederation,
-    ) -> Option<String> {
-        // Find the cluster in the federation's cluster list
-        let cluster = federation
-            .spec
-            .clusters
-            .iter()
-            .find(|c| c.name == cluster_name)?;
-
-        // Check if the cluster is enabled
-        if !cluster.enabled {
-            tracing::debug!(
-                cluster = %cluster_name,
-                federation = %federation.name_any(),
-                "Cluster is disabled in federation"
-            );
-            return None;
-        }
-
-        tracing::debug!(
-            cluster = %cluster_name,
-            endpoint = %cluster.endpoint,
-            federation = %federation.name_any(),
-            "Found cluster endpoint in federation"
-        );
-
-        Some(cluster.endpoint.clone())
-    }
-
     /// Deploy pipeline via HTTP POST to cluster's pipeline API.
+    ///
+    /// Injects authentication credentials if provided.
     async fn http_deploy(
         &self,
         endpoint: &str,
         pipeline_name: &str,
         payload: Vec<u8>,
+        credentials: Option<&Credentials>,
     ) -> Result<(), OperatorError> {
         let url = format!("{}/api/v1/pipelines/{}", endpoint, pipeline_name);
 
@@ -979,6 +1088,14 @@ impl FederatedPipelineController {
             .map_err(|e| {
                 OperatorError::DeploymentError(format!("Failed to build request: {}", e))
             })?;
+
+        // Inject authentication if credentials provided
+        let req = if let Some(creds) = credentials {
+            let auth_client = AuthenticatedHttpClient::with_credentials(creds.clone());
+            auth_client.inject_auth(req)
+        } else {
+            req
+        };
 
         // Connect
         let stream = tokio::net::TcpStream::connect(&addr).await.map_err(|e| {

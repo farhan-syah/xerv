@@ -27,6 +27,8 @@ mod cluster;
 mod federated_pipeline;
 mod federation;
 mod pipeline;
+mod secret_extraction;
+mod status_metrics;
 
 pub use cluster::{ClusterController, error_policy as cluster_error_policy};
 pub use federated_pipeline::{
