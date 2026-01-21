@@ -25,7 +25,7 @@ dispatch-nats = ["xerv-core/dispatch-nats"]
 dispatch-all = ["xerv-core/dispatch-all"]
 
 [dependencies]
-xerv-core = { version = "0.1.0", path = "../xerv-core" }
+xerv-core.workspace = true
 
 # Workspace dependencies
 tokio.workspace = true

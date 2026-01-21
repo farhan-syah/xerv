@@ -1,5 +1,5 @@
 [workspace]
-members = ["xerv-core", "xerv-macros", "xerv-nodes", "xerv-cli", "xerv-executor", "xerv-cluster", "xerv-operator"]
+members = ["xerv-core", "xerv-macros", "xerv-nodes", "xerv-cli", "xerv-client", "xerv-executor", "xerv-cluster", "xerv-operator"]
 resolver = "2"
 
 [workspace.package]
@@ -17,6 +17,15 @@ keywords = ["workflow", "orchestration", "pipeline", "dag", "scheduler"]
 categories = ["asynchronous", "development-tools", "command-line-utilities"]
 
 [workspace.dependencies]
+# Internal crates (use workspace = true in member crates)
+xerv-core = { version = "0.1.0", path = "xerv-core" }
+xerv-macros = { version = "0.1.0", path = "xerv-macros" }
+xerv-nodes = { version = "0.1.0", path = "xerv-nodes" }
+xerv-client = { version = "0.1.0", path = "xerv-client" }
+xerv-executor = { version = "0.1.0", path = "xerv-executor" }
+xerv-cluster = { version = "0.1.0", path = "xerv-cluster" }
+xerv-operator = { version = "0.1.0", path = "xerv-operator" }
+
 # Core Serialization & Memory-Efficient Storage
 rkyv = "0.8"
 rkyv_derive = "0.8"

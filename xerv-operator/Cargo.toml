@@ -17,8 +17,8 @@ rust-version = "1.85"
 default = []
 
 [dependencies]
-xerv-core = { version = "0.1.0", path = "../xerv-core" }
-xerv-executor = { version = "0.1.0", path = "../xerv-executor" }
+xerv-core.workspace = true
+xerv-executor.workspace = true
 
 # Workspace dependencies
 tokio.workspace = true

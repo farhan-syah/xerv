@@ -18,7 +18,7 @@ default = []
 kafka = ["rdkafka", "futures"]
 
 [dependencies]
-xerv-core = { version = "0.1.0", path = "../xerv-core" }
+xerv-core.workspace = true
 
 # Workspace dependencies
 serde.workspace = true
