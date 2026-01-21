@@ -9,7 +9,7 @@ use xerv_core::traits::{PipelineConfig, PipelineState};
 use xerv_core::types::PipelineId;
 use xerv_executor::pipeline::{Pipeline, PipelineBuilder, PipelineController, PipelineMetrics};
 
-use common::{build_linear_flow, test_executor_config, test_wal_config};
+use common::{build_linear_flow, test_executor_config, test_flow_definition, test_wal_config};
 
 fn create_test_pipeline(name: &str) -> Pipeline {
     let (graph, nodes) = build_linear_flow(2);
@@ -20,9 +20,11 @@ fn create_test_pipeline(name: &str) -> Pipeline {
     };
 
     let config = PipelineConfig::new(name);
+    let definition = test_flow_definition(name);
 
     let mut builder = PipelineBuilder::new(id, config)
         .with_graph(graph)
+        .with_definition(definition)
         .with_wal_config(test_wal_config())
         .with_executor_config(test_executor_config());
 

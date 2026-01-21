@@ -177,14 +177,14 @@ fn test_executor_config_with_concurrency(max_concurrent_nodes: usize) -> Executo
 }
 
 /// Build a wide flow with tracking nodes for concurrency verification.
-fn build_wide_flow_with_tracking(
-    width: usize,
-) -> (
+type WideFlowWithTracking = (
     FlowGraph,
     HashMap<NodeId, Box<dyn Node>>,
     Arc<AtomicUsize>,
     Arc<AtomicUsize>,
-) {
+);
+
+fn build_wide_flow_with_tracking(width: usize) -> WideFlowWithTracking {
     let current = Arc::new(AtomicUsize::new(0));
     let max_observed = Arc::new(AtomicUsize::new(0));
 

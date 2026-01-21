@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use xerv_core::arena::ArenaConfig;
+use xerv_core::flow::{FlowDefinition, TriggerDefinition};
 use xerv_core::logging::BufferedCollector;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput};
 use xerv_core::types::{NodeId, RelPtr};
@@ -127,4 +128,18 @@ pub fn build_diamond_flow() -> (FlowGraph, HashMap<NodeId, Box<dyn Node>>) {
     nodes.insert(node_d, Box::new(PassthroughNode));
 
     (graph, nodes)
+}
+
+/// Create a minimal FlowDefinition for testing.
+pub fn test_flow_definition(name: &str) -> FlowDefinition {
+    FlowDefinition {
+        name: name.to_string(),
+        version: Some("1".to_string()),
+        description: None,
+        triggers: vec![TriggerDefinition::new("trigger", "memory")],
+        nodes: HashMap::new(),
+        edges: vec![],
+        settings: Default::default(),
+        metadata: None,
+    }
 }
