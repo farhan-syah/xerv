@@ -11,6 +11,22 @@ XERV is a workflow orchestration platform for building data pipelines and automa
 - **Testable workflows** with mock providers for time, HTTP, filesystems
 - **Fault-tolerant execution** via write-ahead logs (WAL) and crash recovery
 
+## Deployment Modes
+
+XERV is **library-first**: the core engine lives in `xerv-core` and `xerv-executor`, deployed in two complementary ways.
+
+| Aspect            | Library Mode                             | Server Mode                         |
+| ----------------- | ---------------------------------------- | ----------------------------------- |
+| **Use Case**      | Embed in Rust app                        | Standalone service/cluster          |
+| **Example**       | HFT bot, IoT/edge device, async refactor | Microservices, enterprise pipelines |
+| **Communication** | Direct function calls                    | REST/gRPC API                       |
+| **Latency**       | Microseconds                             | Milliseconds                        |
+| **Backend**       | In-process                               | Memory, Raft, Redis, or NATS        |
+| **Scaling**       | Vertical                                 | Horizontal (multi-node cluster)     |
+| **Deployment**    | `your-app` binary                        | `xerv serve` + Kubernetes/Docker    |
+
+**Migration Path:** Start with library mode. Scale to server mode when you need external orchestration—the flow definitions and node logic remain unchanged.
+
 ## Quick Start
 
 See the [Getting Started Guide](docs/getting-started.md) for detailed setup instructions.

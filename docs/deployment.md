@@ -270,13 +270,46 @@ spec:
 
 ### Common
 
-| Variable                | Default     | Description                                |
-| ----------------------- | ----------- | ------------------------------------------ |
-| `XERV_DISPATCH_BACKEND` | `memory`    | Backend: `memory`, `raft`, `redis`, `nats` |
-| `XERV_API_PORT`         | `8080`      | HTTP API port                              |
-| `XERV_DATA_DIR`         | `/tmp/xerv` | Data directory for arena/WAL               |
-| `XERV_METRICS_ENABLED`  | `true`      | Enable Prometheus metrics                  |
-| `RUST_LOG`              | `xerv=info` | Log level                                  |
+| Variable                    | Default     | Description                                |
+| --------------------------- | ----------- | ------------------------------------------ |
+| `XERV_DISPATCH_BACKEND`     | `memory`    | Backend: `memory`, `raft`, `redis`, `nats` |
+| `XERV_API_PORT`             | `8080`      | HTTP API port                              |
+| `XERV_DATA_DIR`             | `/tmp/xerv` | Base directory for arena and WAL files     |
+| `XERV_METRICS_ENABLED`      | `true`      | Enable Prometheus metrics                  |
+| `RUST_LOG`                  | `xerv=info` | Log level                                  |
+
+### Storage and Durability
+
+| Variable                    | Default     | Description                                          |
+| --------------------------- | ----------- | ---------------------------------------------------- |
+| `XERV_ARENA_SYNC`           | `false`     | Enable fsync on arena writes (slower but safer)      |
+| `XERV_WAL_SYNC`             | `true`      | Enable fsync on WAL writes (recommended)             |
+| `XERV_WAL_GROUP_COMMIT`     | `false`     | Enable group commit for higher WAL throughput        |
+
+### Performance Tuning
+
+| Variable                    | Default | Description                                          |
+| --------------------------- | ------- | ---------------------------------------------------- |
+| `XERV_MAX_CONCURRENT_NODES` | `16`    | Maximum concurrent node executions per trace         |
+| `XERV_MAX_CONCURRENT_TRACES`| `100`   | Maximum concurrent traces                            |
+| `XERV_NODE_TIMEOUT_MS`      | `30000` | Node execution timeout in milliseconds               |
+
+### Production Configuration
+
+For production deployments, use persistent storage and enable durability:
+
+```bash
+# Use persistent storage (not tmpfs)
+export XERV_DATA_DIR=/var/lib/xerv
+
+# Enable sync for crash safety
+export XERV_ARENA_SYNC=true
+export XERV_WAL_SYNC=true
+
+# Optimize for high throughput
+export XERV_WAL_GROUP_COMMIT=true
+export XERV_MAX_CONCURRENT_NODES=32
+```
 
 ### Dispatch-Specific
 
