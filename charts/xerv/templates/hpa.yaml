@@ -1,0 +1,63 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    {{- if eq .Values.dispatch.backend "raft" }}
+    kind: StatefulSet
+    {{- else }}
+    kind: Deployment
+    {{- end }}
+    name: {{ include "xerv.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.metrics.pendingTraces.enabled }}
+    # Scale based on pending traces in dispatch queue
+    - type: Pods
+      pods:
+        metric:
+          name: xerv_dispatch_queue_depth
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.metrics.pendingTraces.targetValue | quote }}
+    {{- end }}
+    {{- if .Values.autoscaling.metrics.activeTraces.enabled }}
+    # Scale based on active trace count
+    - type: Pods
+      pods:
+        metric:
+          name: xerv_active_traces
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.metrics.activeTraces.targetValue | quote }}
+    {{- end }}
+    {{- with .Values.autoscaling.customMetrics }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.autoscaling.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

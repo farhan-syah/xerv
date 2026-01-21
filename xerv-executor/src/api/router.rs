@@ -52,9 +52,10 @@ pub async fn route(
     let path = path.strip_prefix(API_PREFIX).unwrap_or(&path);
 
     let response = match (method, path) {
-        // Health endpoints (no auth required - exempt paths)
+        // Health and metrics endpoints (no auth required - exempt paths)
         (Method::GET, "/health") => handlers::health::get_health(state).await,
         (Method::GET, "/status") => handlers::health::get_status(state).await,
+        (Method::GET, "/metrics") => handlers::metrics::get_metrics(state).await,
 
         // Pipeline endpoints
         (Method::GET, "/pipelines") => {

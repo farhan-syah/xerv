@@ -47,6 +47,9 @@ http-body-util.workspace = true
 bytes.workspace = true
 urlencoding = "2.1"
 
+# Metrics
+prometheus.workspace = true
+
 # Optional dependencies
 wasmtime = { workspace = true, optional = true }
 

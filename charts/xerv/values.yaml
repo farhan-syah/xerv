@@ -175,6 +175,58 @@ extraVolumes: []
   #   configMap:
   #     name: xerv-pipelines
 
+# Horizontal Pod Autoscaler
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  # Target CPU utilization percentage (optional)
+  targetCPUUtilizationPercentage: 80
+  # Target memory utilization percentage (optional)
+  # targetMemoryUtilizationPercentage: 80
+
+  # Custom XERV metrics for scaling
+  metrics:
+    # Scale based on pending traces in dispatch queue
+    pendingTraces:
+      enabled: false
+      # Target average queue depth per pod
+      targetValue: "100"
+    # Scale based on active trace count
+    activeTraces:
+      enabled: false
+      # Target average active traces per pod
+      targetValue: "50"
+
+  # Custom metrics (for advanced use cases)
+  # customMetrics:
+  #   - type: External
+  #     external:
+  #       metric:
+  #         name: redis_queue_length
+  #       target:
+  #         type: Value
+  #         value: "1000"
+
+  # Scaling behavior configuration
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+
 # Network policy
 networkPolicy:
   enabled: false

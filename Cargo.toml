@@ -69,3 +69,6 @@ notify = { version = "8.0", default-features = false, features = ["macos_fsevent
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 bytes = "1.10"
+
+# Metrics
+prometheus = "0.13"
