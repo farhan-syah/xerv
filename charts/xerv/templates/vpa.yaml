@@ -1,0 +1,52 @@
+{{- if .Values.vpa.enabled }}
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    {{- if eq .Values.dispatch.backend "raft" }}
+    kind: StatefulSet
+    {{- else }}
+    kind: Deployment
+    {{- end }}
+    name: {{ include "xerv.fullname" . }}
+  updatePolicy:
+    updateMode: {{ .Values.vpa.updateMode | quote }}
+  resourcePolicy:
+    containerPolicies:
+      {{- range .Values.vpa.containerPolicies }}
+      - containerName: {{ .containerName | quote }}
+        {{- if .minAllowed }}
+        minAllowed:
+          {{- if .minAllowed.cpu }}
+          cpu: {{ .minAllowed.cpu | quote }}
+          {{- end }}
+          {{- if .minAllowed.memory }}
+          memory: {{ .minAllowed.memory | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if .maxAllowed }}
+        maxAllowed:
+          {{- if .maxAllowed.cpu }}
+          cpu: {{ .maxAllowed.cpu | quote }}
+          {{- end }}
+          {{- if .maxAllowed.memory }}
+          memory: {{ .maxAllowed.memory | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if .controlledResources }}
+        controlledResources:
+          {{- toYaml .controlledResources | nindent 10 }}
+        {{- end }}
+        {{- if .controlledValues }}
+        controlledValues: {{ .controlledValues | quote }}
+        {{- end }}
+        {{- if .mode }}
+        mode: {{ .mode | quote }}
+        {{- end }}
+      {{- end }}
+{{- end }}

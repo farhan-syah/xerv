@@ -110,6 +110,36 @@ helm install xerv xerv/xerv \
 | `serviceMesh.linkerd.serviceProfile.*`   | ServiceProfile config          | See values |
 | `serviceMesh.linkerd.trafficSplit.*`     | TrafficSplit for canary        | See values |
 
+### Network Policy
+
+| Parameter               | Description              | Default |
+| ----------------------- | ------------------------ | ------- |
+| `networkPolicy.enabled` | Enable NetworkPolicy     | `false` |
+| `networkPolicy.ingress` | Additional ingress rules | `[]`    |
+| `networkPolicy.egress`  | Additional egress rules  | `[]`    |
+
+### KEDA (Kubernetes Event-Driven Autoscaling)
+
+| Parameter                               | Description                            | Default |
+| --------------------------------------- | -------------------------------------- | ------- |
+| `keda.enabled`                          | Enable KEDA ScaledObject               | `false` |
+| `keda.minReplicaCount`                  | Minimum replicas (0 for scale-to-zero) | `0`     |
+| `keda.maxReplicaCount`                  | Maximum replicas                       | `10`    |
+| `keda.cooldownPeriod`                   | Cooldown before scale-down (seconds)   | `300`   |
+| `keda.pollingInterval`                  | Metrics polling interval (seconds)     | `30`    |
+| `keda.triggers.pendingTraces.enabled`   | Scale on pending traces                | `false` |
+| `keda.triggers.pendingTraces.threshold` | Pending traces threshold               | `"50"`  |
+| `keda.triggers.activeTraces.enabled`    | Scale on active traces                 | `false` |
+| `keda.triggers.activeTraces.threshold`  | Active traces threshold                | `"100"` |
+
+### Vertical Pod Autoscaler (VPA)
+
+| Parameter               | Description                           | Default    |
+| ----------------------- | ------------------------------------- | ---------- |
+| `vpa.enabled`           | Enable VPA                            | `false`    |
+| `vpa.updateMode`        | Update mode: `Off`, `Initial`, `Auto` | `"Auto"`   |
+| `vpa.containerPolicies` | Container resource policies           | See values |
+
 ## Examples
 
 ### Production Raft Cluster
@@ -227,6 +257,80 @@ serviceMesh:
     # Enable for canary deployments
     trafficSplit:
       enabled: false
+```
+
+### Network Policy
+
+```yaml
+# values-network-secure.yaml
+networkPolicy:
+  enabled: true
+  # Allow traffic from a specific namespace
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+  # Allow egress to external API
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 443
+```
+
+### KEDA Autoscaling (Scale-to-Zero)
+
+```yaml
+# values-keda.yaml
+# Disable HPA when using KEDA
+autoscaling:
+  enabled: false
+
+keda:
+  enabled: true
+  minReplicaCount: 0 # Scale to zero when idle
+  maxReplicaCount: 20
+  cooldownPeriod: 300
+  pollingInterval: 15
+  fallback:
+    enabled: true
+    replicas: 2
+  triggers:
+    pendingTraces:
+      enabled: true
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local
+      threshold: "50"
+    activeTraces:
+      enabled: true
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local
+      threshold: "100"
+```
+
+### Vertical Pod Autoscaler
+
+```yaml
+# values-vpa.yaml
+vpa:
+  enabled: true
+  updateMode: "Auto"
+  containerPolicies:
+    - containerName: "*"
+      minAllowed:
+        cpu: 100m
+        memory: 256Mi
+      maxAllowed:
+        cpu: 4
+        memory: 8Gi
+      controlledResources:
+        - cpu
+        - memory
+      controlledValues: "RequestsAndLimits"
 ```
 
 ## Service Mesh Integration

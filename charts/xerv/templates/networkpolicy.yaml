@@ -1,0 +1,103 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "xerv.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from pods with the same app label (intra-cluster communication)
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "xerv.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.server.apiPort }}
+        - protocol: TCP
+          port: {{ .Values.server.grpcPort }}
+        {{- if .Values.metrics.enabled }}
+        - protocol: TCP
+          port: {{ .Values.metrics.port }}
+        {{- end }}
+    # Allow traffic from Prometheus for metrics scraping
+    {{- if .Values.metrics.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ .Values.metrics.port }}
+    {{- end }}
+    # Allow ingress controller traffic
+    {{- if .Values.ingress.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: {{ .Values.server.apiPort }}
+    {{- end }}
+    # Custom ingress rules from values
+    {{- with .Values.networkPolicy.ingress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow communication between XERV pods
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "xerv.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.server.apiPort }}
+        - protocol: TCP
+          port: {{ .Values.server.grpcPort }}
+    # Allow Redis egress (when redis backend is used)
+    {{- if eq .Values.dispatch.backend "redis" }}
+    {{- if .Values.dispatch.redis.url }}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 6379
+    {{- end }}
+    {{- end }}
+    # Allow NATS egress (when nats backend is used)
+    {{- if eq .Values.dispatch.backend "nats" }}
+    {{- if .Values.dispatch.nats.url }}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 4222
+    {{- end }}
+    {{- end }}
+    # Custom egress rules from values
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

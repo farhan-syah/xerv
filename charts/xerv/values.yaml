@@ -233,6 +233,71 @@ networkPolicy:
   ingress: []
   egress: []
 
+# KEDA (Kubernetes Event-Driven Autoscaling)
+# Alternative to HPA with support for scaling to zero and external metrics
+keda:
+  enabled: false
+  # Minimum replicas (can be 0 for scale-to-zero)
+  minReplicaCount: 0
+  # Maximum replicas
+  maxReplicaCount: 10
+  # Cooldown period before scaling down (seconds)
+  cooldownPeriod: 300
+  # Polling interval for metrics (seconds)
+  pollingInterval: 30
+  # Fallback replicas if metrics are unavailable
+  fallback:
+    enabled: true
+    replicas: 1
+  # Prometheus-based triggers
+  triggers:
+    # Scale based on pending traces in dispatch queue
+    pendingTraces:
+      enabled: false
+      # Prometheus server address
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local
+      # Threshold to trigger scaling
+      threshold: "50"
+      # Prometheus query
+      query: xerv_dispatch_queue_depth
+    # Scale based on active trace count
+    activeTraces:
+      enabled: false
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local
+      threshold: "100"
+      query: xerv_active_traces
+    # Scale based on CPU utilization
+    cpu:
+      enabled: false
+      threshold: "80"
+    # Scale based on memory utilization
+    memory:
+      enabled: false
+      threshold: "80"
+
+# Vertical Pod Autoscaler
+vpa:
+  enabled: false
+  # Update mode: "Off", "Initial", "Auto"
+  updateMode: "Auto"
+  # Container policies
+  containerPolicies:
+    - containerName: "*"
+      # Minimum allowed resources
+      minAllowed:
+        cpu: 50m
+        memory: 128Mi
+      # Maximum allowed resources
+      maxAllowed:
+        cpu: 4
+        memory: 8Gi
+      # Control which recommendations are applied
+      controlledResources:
+        - cpu
+        - memory
+      # Controlled values: "RequestsOnly", "RequestsAndLimits"
+      controlledValues: "RequestsAndLimits"
+
 # Service Mesh Integration
 # Supports both Istio and Linkerd for advanced networking
 serviceMesh:

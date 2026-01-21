@@ -1,0 +1,76 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    {{- if eq .Values.dispatch.backend "raft" }}
+    kind: StatefulSet
+    {{- else }}
+    kind: Deployment
+    {{- end }}
+    name: {{ include "xerv.fullname" . }}
+  minReplicaCount: {{ .Values.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.keda.maxReplicaCount }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  {{- if .Values.keda.fallback.enabled }}
+  fallback:
+    failureThreshold: 3
+    replicas: {{ .Values.keda.fallback.replicas }}
+  {{- end }}
+  triggers:
+    {{- if .Values.keda.triggers.pendingTraces.enabled }}
+    # Scale based on pending traces in dispatch queue
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.keda.triggers.pendingTraces.serverAddress | quote }}
+        metricName: xerv_dispatch_queue_depth
+        threshold: {{ .Values.keda.triggers.pendingTraces.threshold | quote }}
+        query: {{ .Values.keda.triggers.pendingTraces.query }}
+        namespace: {{ .Release.Namespace }}
+    {{- end }}
+    {{- if .Values.keda.triggers.activeTraces.enabled }}
+    # Scale based on active trace count
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.keda.triggers.activeTraces.serverAddress | quote }}
+        metricName: xerv_active_traces
+        threshold: {{ .Values.keda.triggers.activeTraces.threshold | quote }}
+        query: {{ .Values.keda.triggers.activeTraces.query }}
+        namespace: {{ .Release.Namespace }}
+    {{- end }}
+    {{- if .Values.keda.triggers.cpu.enabled }}
+    # Scale based on CPU utilization
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ .Values.keda.triggers.cpu.threshold | quote }}
+    {{- end }}
+    {{- if .Values.keda.triggers.memory.enabled }}
+    # Scale based on memory utilization
+    - type: memory
+      metricType: Utilization
+      metadata:
+        value: {{ .Values.keda.triggers.memory.threshold | quote }}
+    {{- end }}
+---
+{{- if or .Values.keda.triggers.pendingTraces.enabled .Values.keda.triggers.activeTraces.enabled }}
+# TriggerAuthentication for Prometheus (if using authenticated Prometheus)
+# Uncomment and configure if your Prometheus requires authentication
+# apiVersion: keda.sh/v1alpha1
+# kind: TriggerAuthentication
+# metadata:
+#   name: {{ include "xerv.fullname" . }}-prometheus-auth
+#   labels:
+#     {{- include "xerv.labels" . | nindent 4 }}
+# spec:
+#   secretTargetRef:
+#     - parameter: bearerToken
+#       name: prometheus-token
+#       key: token
+{{- end }}
+{{- end }}
