@@ -34,6 +34,7 @@ anyhow.workspace = true
 log.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
 
 # HTTP server
 hyper.workspace = true

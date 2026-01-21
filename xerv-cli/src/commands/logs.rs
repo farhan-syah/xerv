@@ -281,7 +281,7 @@ pub async fn clear(host: &str, port: u16) -> Result<()> {
 
 /// Print a formatted log entry.
 fn print_log_entry(log: &LogEntry) {
-    let timestamp = &log.timestamp;
+    let timestamp = log.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let level = &log.level;
     let category = &log.category;
     let message = &log.message;
@@ -338,9 +338,15 @@ mod tests {
 
     #[test]
     fn test_print_log_entry() {
+        use chrono::{DateTime, Utc};
+
+        let timestamp = DateTime::parse_from_rfc3339("2024-01-15T10:30:00.000Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
         let log = LogEntry {
             id: 1,
-            timestamp: "2024-01-15T10:30:00.000Z".to_string(),
+            timestamp,
             level: "info".to_string(),
             category: "node".to_string(),
             message: "Test message".to_string(),
