@@ -43,20 +43,15 @@ pub struct TraceRequest {
 }
 
 /// Content type of the request payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PayloadType {
     /// JSON-encoded payload.
+    #[default]
     Json,
     /// Rkyv-serialized payload (zero-copy).
     Rkyv,
     /// Raw bytes (opaque to dispatch layer).
     Raw,
-}
-
-impl Default for PayloadType {
-    fn default() -> Self {
-        Self::Json
-    }
 }
 
 impl TraceRequest {
@@ -196,7 +191,7 @@ impl TraceRequestBuilder {
 
     /// Build the trace request.
     pub fn build(self) -> TraceRequest {
-        let trace_id = self.trace_id.unwrap_or_else(TraceId::new);
+        let trace_id = self.trace_id.unwrap_or_default();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

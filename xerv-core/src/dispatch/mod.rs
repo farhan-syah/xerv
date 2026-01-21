@@ -56,7 +56,7 @@ pub use request::{TraceRequest, TraceRequestBuilder};
 pub use traits::{DispatchBackend, DispatchError, DispatchResult};
 
 #[cfg(feature = "dispatch-raft")]
-pub use raft::RaftDispatch;
+pub use raft::{RaftClusterProvider, RaftDispatch};
 
 #[cfg(feature = "dispatch-redis")]
 pub use redis::RedisDispatch;

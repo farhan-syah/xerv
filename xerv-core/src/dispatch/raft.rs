@@ -1,23 +1,23 @@
 //! Raft-based dispatch backend for consensus-driven execution.
 //!
-//! This backend uses the built-in OpenRaft consensus from xerv-cluster
-//! for distributed trace dispatch without external dependencies.
+//! This backend provides a local queue implementation with hooks for integration
+//! with external Raft consensus systems (like xerv-cluster).
 //!
 //! # Features
 //!
-//! - **Zero Dependencies**: No external services required
-//! - **Strong Consistency**: Raft consensus ensures exactly-once delivery
-//! - **Edge Deployments**: Works in air-gapped environments
+//! - **Zero Dependencies**: No external services required for local mode
+//! - **Pluggable Consensus**: Trait-based integration with Raft implementations
+//! - **Edge Deployments**: Works standalone in air-gapped environments
 //!
-//! # Limitations
+//! # Architecture
 //!
-//! - Lower throughput than Redis/NATS (~5k traces/s)
-//! - Requires odd number of nodes for quorum
+//! The `RaftDispatch` can operate in two modes:
 //!
-//! # Requirements
+//! 1. **Local Queue Mode** (default): Uses an in-memory queue for single-node deployments
+//! 2. **Cluster Mode**: Integrates with a `RaftClusterProvider` for distributed consensus
 //!
-//! This backend is designed to integrate with xerv-cluster's Raft implementation.
-//! See `xerv-cluster` crate for the underlying consensus mechanism.
+//! The cluster integration happens at a higher level (e.g., xerv-executor) to avoid
+//! circular dependencies.
 
 use super::config::RaftConfig;
 use super::request::TraceRequest;
@@ -28,14 +28,54 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Trait for Raft cluster integration.
+///
+/// This trait abstracts the cluster operations needed by RaftDispatch,
+/// allowing xerv-cluster or other implementations to provide the actual
+/// Raft consensus logic without creating circular dependencies.
+pub trait RaftClusterProvider: Send + Sync {
+    /// Get the node ID of this cluster member.
+    fn node_id(&self) -> u64;
+
+    /// Record a trace start in the Raft log.
+    fn start_trace(
+        &self,
+        trace_id: TraceId,
+        pipeline_id: PipelineId,
+        trigger_data: Vec<u8>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
+
+    /// Record a trace completion in the Raft log.
+    fn complete_trace(
+        &self,
+        trace_id: TraceId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
+
+    /// Record a trace failure in the Raft log.
+    fn fail_trace(
+        &self,
+        trace_id: TraceId,
+        error: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
+
+    /// Check if the cluster is healthy (has a leader).
+    fn is_healthy(&self) -> bool;
+}
+
 /// Raft-based dispatch backend.
 ///
-/// This is a placeholder implementation that uses local state.
-/// The full implementation will integrate with xerv-cluster's OpenRaft consensus.
+/// This backend can operate in two modes:
+///
+/// 1. **Local Queue Mode**: When no cluster provider is attached, uses an in-memory
+///    queue for single-node deployments.
+///
+/// 2. **Cluster Mode**: When a `RaftClusterProvider` is attached via `with_cluster()`,
+///    all dispatch operations are recorded in the Raft log for strong consistency.
 pub struct RaftDispatch {
-    #[allow(dead_code)]
     config: RaftConfig,
-    /// Pending traces queue (placeholder for Raft log)
+    /// The cluster provider (when using full Raft integration)
+    cluster: Option<Arc<dyn RaftClusterProvider>>,
+    /// Local pending traces queue
     pending: Arc<Mutex<VecDeque<TraceRequest>>>,
     /// In-flight traces being processed
     in_flight: Arc<Mutex<HashMap<TraceId, TraceRequest>>>,
@@ -44,23 +84,108 @@ pub struct RaftDispatch {
 }
 
 impl RaftDispatch {
-    /// Create a new Raft dispatch backend.
+    /// Create a new Raft dispatch backend in local queue mode.
     ///
-    /// Note: This is a placeholder implementation. The full implementation
-    /// will establish connections to other Raft nodes and participate in
-    /// consensus.
+    /// For distributed consensus, call `with_cluster()` after creation to attach
+    /// a cluster provider.
     pub fn new(config: RaftConfig) -> DispatchResult<Self> {
-        tracing::warn!(
-            "RaftDispatch is using placeholder implementation. \
-             Full Raft consensus integration with xerv-cluster is pending."
+        tracing::info!(
+            node_id = config.node_id,
+            "RaftDispatch created in local queue mode"
         );
 
         Ok(Self {
             config,
+            cluster: None,
             pending: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             shutting_down: AtomicBool::new(false),
         })
+    }
+
+    /// Attach a cluster provider for full Raft consensus integration.
+    ///
+    /// Once attached, all dispatch operations go through the Raft log
+    /// for strong consistency across the cluster.
+    pub fn with_cluster(mut self, provider: Arc<dyn RaftClusterProvider>) -> Self {
+        tracing::info!(
+            node_id = provider.node_id(),
+            "RaftDispatch attached to cluster provider"
+        );
+        self.cluster = Some(provider);
+        self
+    }
+
+    /// Set the cluster provider (alternative to builder pattern).
+    pub fn set_cluster(&mut self, provider: Arc<dyn RaftClusterProvider>) {
+        tracing::info!(
+            node_id = provider.node_id(),
+            "RaftDispatch cluster provider updated"
+        );
+        self.cluster = Some(provider);
+    }
+
+    /// Check if cluster integration is active.
+    pub fn is_cluster_mode(&self) -> bool {
+        self.cluster.is_some()
+    }
+
+    /// Get the node ID from config.
+    pub fn node_id(&self) -> u64 {
+        self.config.node_id
+    }
+
+    /// Execute enqueue via Raft consensus.
+    async fn enqueue_via_raft(&self, request: &TraceRequest) -> DispatchResult<()> {
+        let cluster = self
+            .cluster
+            .as_ref()
+            .ok_or_else(|| DispatchError::ConnectionFailed("Raft cluster not connected".into()))?;
+
+        cluster
+            .start_trace(
+                request.trace_id,
+                request.pipeline_id.clone(),
+                request.payload.clone(),
+            )
+            .await
+            .map_err(|e| DispatchError::BackendError(format!("Raft error: {}", e)))
+    }
+
+    /// Execute ack via Raft consensus.
+    async fn ack_via_raft(&self, trace_id: TraceId) -> DispatchResult<()> {
+        let cluster = self
+            .cluster
+            .as_ref()
+            .ok_or_else(|| DispatchError::ConnectionFailed("Raft cluster not connected".into()))?;
+
+        cluster
+            .complete_trace(trace_id)
+            .await
+            .map_err(|e| DispatchError::BackendError(format!("Raft error: {}", e)))
+    }
+
+    /// Execute nack via Raft consensus.
+    async fn nack_via_raft(&self, trace_id: TraceId, error: String) -> DispatchResult<()> {
+        let cluster = self
+            .cluster
+            .as_ref()
+            .ok_or_else(|| DispatchError::ConnectionFailed("Raft cluster not connected".into()))?;
+
+        cluster
+            .fail_trace(trace_id, error)
+            .await
+            .map_err(|e| DispatchError::BackendError(format!("Raft error: {}", e)))
+    }
+
+    /// Check Raft cluster health.
+    fn check_cluster_health(&self) -> bool {
+        if let Some(cluster) = &self.cluster {
+            cluster.is_healthy()
+        } else {
+            // No cluster attached = healthy (local mode)
+            true
+        }
     }
 }
 
@@ -73,11 +198,18 @@ impl DispatchBackend for RaftDispatch {
 
             let trace_id = request.trace_id;
 
-            // In the full implementation, this would propose the request
-            // to the Raft log and wait for commit confirmation.
-            self.pending.lock().push_back(request);
+            if self.cluster.is_some() {
+                // Full Raft consensus path
+                self.enqueue_via_raft(&request).await?;
+                // Also track locally for dequeue
+                self.pending.lock().push_back(request);
+                tracing::debug!(trace_id = %trace_id, "Enqueued trace via Raft consensus");
+                return Ok(trace_id);
+            }
 
-            tracing::debug!(trace_id = %trace_id, "Enqueued trace (Raft placeholder)");
+            // Local queue fallback
+            self.pending.lock().push_back(request);
+            tracing::debug!(trace_id = %trace_id, "Enqueued trace (local queue)");
             Ok(trace_id)
         })
     }
@@ -88,14 +220,13 @@ impl DispatchBackend for RaftDispatch {
                 return Ok(None);
             }
 
-            // In the full implementation, this would read from the
-            // committed Raft log and claim the trace for processing.
+            // Dequeue from local queue (both modes use this for worker assignment)
             let mut pending = self.pending.lock();
             if let Some(mut request) = pending.pop_front() {
                 request.increment_attempt();
                 let trace_id = request.trace_id;
                 self.in_flight.lock().insert(trace_id, request.clone());
-                tracing::debug!(trace_id = %trace_id, "Dequeued trace (Raft placeholder)");
+                tracing::debug!(trace_id = %trace_id, "Dequeued trace for processing");
                 Ok(Some(request))
             } else {
                 Ok(None)
@@ -105,8 +236,17 @@ impl DispatchBackend for RaftDispatch {
 
     fn ack(&self, trace_id: TraceId) -> DispatchFuture<'_, ()> {
         Box::pin(async move {
+            // Remove from in-flight tracking
             self.in_flight.lock().remove(&trace_id);
-            tracing::debug!(trace_id = %trace_id, "Acknowledged trace (Raft placeholder)");
+
+            if self.cluster.is_some() {
+                // Record completion via Raft
+                self.ack_via_raft(trace_id).await?;
+                tracing::debug!(trace_id = %trace_id, "Acknowledged trace via Raft");
+                return Ok(());
+            }
+
+            tracing::debug!(trace_id = %trace_id, "Acknowledged trace (local)");
             Ok(())
         })
     }
@@ -117,17 +257,23 @@ impl DispatchBackend for RaftDispatch {
 
             if let Some(request) = maybe_request {
                 if retry && !request.is_exhausted() {
+                    // Re-queue for retry
                     self.pending.lock().push_back(request);
                     tracing::debug!(
                         trace_id = %trace_id,
                         error = %error,
-                        "NACK'd trace, re-queued for retry (Raft placeholder)"
+                        "NACK'd trace, re-queued for retry"
                     );
                 } else {
+                    // Permanent failure
+                    if self.cluster.is_some() {
+                        self.nack_via_raft(trace_id, error.clone()).await?;
+                    }
+
                     tracing::warn!(
                         trace_id = %trace_id,
                         error = %error,
-                        "Trace failed permanently (Raft placeholder)"
+                        "Trace failed permanently"
                     );
                 }
             }
@@ -146,18 +292,23 @@ impl DispatchBackend for RaftDispatch {
 
     fn health_check(&self) -> DispatchFuture<'_, bool> {
         Box::pin(async move {
-            // In the full implementation, this would check:
-            // 1. Raft cluster health
-            // 2. Leader availability
-            // 3. Log replication status
-            Ok(!self.shutting_down.load(Ordering::SeqCst))
+            if self.shutting_down.load(Ordering::SeqCst) {
+                return Ok(false);
+            }
+
+            Ok(self.check_cluster_health())
         })
     }
 
     fn shutdown(&self) -> DispatchFuture<'_, ()> {
         Box::pin(async move {
             self.shutting_down.store(true, Ordering::SeqCst);
-            tracing::info!("Raft dispatch shutdown complete (placeholder)");
+
+            if let Some(cluster) = &self.cluster {
+                tracing::info!(node_id = cluster.node_id(), "Shutting down Raft dispatch");
+            }
+
+            tracing::info!("Raft dispatch shutdown complete");
             Ok(())
         })
     }
@@ -197,6 +348,9 @@ mod tests {
     async fn raft_dispatch_basic() {
         let config = RaftConfig::new(1);
         let dispatch = RaftDispatch::new(config).unwrap();
+
+        // Should start in local mode
+        assert!(!dispatch.is_cluster_mode());
 
         // Enqueue
         let request = TraceRequest::new(
@@ -247,6 +401,48 @@ mod tests {
         // Should be back in queue
         assert_eq!(dispatch.queue_depth().await.unwrap(), 1);
         assert_eq!(dispatch.in_flight_count().await.unwrap(), 0);
+
+        dispatch.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn raft_dispatch_health_check() {
+        let config = RaftConfig::new(1);
+        let dispatch = RaftDispatch::new(config).unwrap();
+
+        // Should be healthy initially
+        assert!(dispatch.health_check().await.unwrap());
+
+        // Should be unhealthy after shutdown
+        dispatch.shutdown().await.unwrap();
+        assert!(!dispatch.health_check().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn raft_dispatch_get_pending_by_pipeline() {
+        let config = RaftConfig::new(1);
+        let dispatch = RaftDispatch::new(config).unwrap();
+
+        let pipeline_a = PipelineId::new("pipeline-a", 1);
+        let pipeline_b = PipelineId::new("pipeline-b", 1);
+
+        // Enqueue traces for different pipelines
+        let req_a1 = TraceRequest::new(TraceId::new(), pipeline_a.clone(), "trigger", vec![]);
+        let req_a2 = TraceRequest::new(TraceId::new(), pipeline_a.clone(), "trigger", vec![]);
+        let req_b = TraceRequest::new(TraceId::new(), pipeline_b.clone(), "trigger", vec![]);
+
+        let trace_a1 = dispatch.enqueue(req_a1).await.unwrap();
+        let trace_a2 = dispatch.enqueue(req_a2).await.unwrap();
+        let _trace_b = dispatch.enqueue(req_b).await.unwrap();
+
+        // Check pending by pipeline
+        let pending_a = dispatch.get_pending_by_pipeline(&pipeline_a).await.unwrap();
+        assert_eq!(pending_a.len(), 2);
+        assert!(pending_a.contains(&trace_a1));
+        assert!(pending_a.contains(&trace_a2));
+
+        let pending_b = dispatch.get_pending_by_pipeline(&pipeline_b).await.unwrap();
+        assert_eq!(pending_b.len(), 1);
 
         dispatch.shutdown().await.unwrap();
     }
