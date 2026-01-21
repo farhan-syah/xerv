@@ -13,6 +13,11 @@ categories = ["command-line-utilities"]
 readme = "../README.md"
 rust-version = "1.85"
 
+[features]
+default = []
+# OpenTelemetry distributed tracing (pass-through to xerv-executor)
+otel = ["xerv-executor/otel"]
+
 [dependencies]
 xerv-core = { version = "0.1.0", path = "../xerv-core" }
 xerv-nodes = { version = "0.1.0", path = "../xerv-nodes" }

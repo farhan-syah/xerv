@@ -16,6 +16,8 @@ rust-version = "1.85"
 [features]
 default = []
 wasm = ["dep:wasmtime"]
+# OpenTelemetry distributed tracing (adds tonic/prost dependencies)
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 # Dispatch backends (pass-through to xerv-core)
 dispatch-raft = ["xerv-core/dispatch-raft"]
 dispatch-redis = ["xerv-core/dispatch-redis"]
@@ -33,6 +35,13 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# OpenTelemetry (optional, enabled via "otel" feature)
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 anyhow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
