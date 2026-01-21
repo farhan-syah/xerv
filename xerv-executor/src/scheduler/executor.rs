@@ -1,6 +1,25 @@
 //! Trace execution engine.
 //!
-//! This module provides the core execution engine for XERV traces.
+//! This module provides the core execution engine for XERV traces with
+//! **concurrent DAG execution**. Nodes are executed in parallel when their
+//! dependencies are satisfied, maximizing throughput.
+//!
+//! ## Architecture
+//!
+//! The executor uses a work-stealing approach:
+//! 1. Find all "ready" nodes (dependencies satisfied, not yet executing)
+//! 2. Spawn concurrent tasks for ready nodes up to `max_concurrent_nodes`
+//! 3. Wait for any task to complete
+//! 4. Update trace state and repeat
+//!
+//! This ensures maximum parallelism while respecting the DAG constraints.
+//!
+//! ## Concurrency Control
+//!
+//! - `max_concurrent_traces`: Limits total active traces
+//! - `max_concurrent_nodes`: Limits concurrent node executions per trace
+//! - Backpressure via semaphore prevents resource exhaustion
+//!
 //! All public methods are instrumented with tracing spans for distributed tracing.
 
 use super::graph::FlowGraph;
@@ -9,8 +28,10 @@ use crate::trace::TraceState;
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tracing::instrument;
-use xerv_core::arena::{Arena, ArenaConfig};
+use xerv_core::arena::{Arena, ArenaConfig, ArenaReader, ArenaWriter};
 use xerv_core::dispatch::{DispatchBackend, DispatchConfig, MemoryDispatch};
 use xerv_core::error::{Result, XervError};
 use xerv_core::logging::{BufferedCollector, LogCategory, LogCollector, LogEvent};
@@ -34,6 +55,12 @@ pub struct ExecutionSignal {
 pub struct ExecutorConfig {
     /// Maximum concurrent traces.
     pub max_concurrent_traces: usize,
+    /// Maximum concurrent node executions per trace.
+    ///
+    /// This controls how many nodes can execute in parallel within a single trace.
+    /// Higher values increase throughput but also memory usage.
+    /// Set to 1 for sequential execution (debugging).
+    pub max_concurrent_nodes: usize,
     /// Timeout per node execution in milliseconds.
     pub node_timeout_ms: u64,
     /// Arena configuration.
@@ -48,6 +75,7 @@ impl Default for ExecutorConfig {
     fn default() -> Self {
         Self {
             max_concurrent_traces: 100,
+            max_concurrent_nodes: 16, // Reasonable default for most workloads
             node_timeout_ms: 30_000,
             arena_config: ArenaConfig::default(),
             wal_config: WalConfig::default(),
@@ -57,21 +85,148 @@ impl Default for ExecutorConfig {
 }
 
 impl ExecutorConfig {
+    /// Create configuration from environment variables.
+    ///
+    /// Reads the following environment variables:
+    /// - `XERV_DATA_DIR`: Base directory for arena and WAL files
+    /// - `XERV_ARENA_SYNC`: Enable arena sync on write
+    /// - `XERV_WAL_SYNC`: Enable WAL sync on write
+    /// - `XERV_WAL_GROUP_COMMIT`: Enable WAL group commit
+    /// - `XERV_DISPATCH_BACKEND`: Dispatch backend (memory, raft, redis, nats)
+    /// - `XERV_MAX_CONCURRENT_NODES`: Maximum concurrent node executions
+    /// - `XERV_MAX_CONCURRENT_TRACES`: Maximum concurrent traces
+    /// - `XERV_NODE_TIMEOUT_MS`: Node execution timeout in milliseconds
+    ///
+    /// # Example
+    ///
+    /// ```bash
+    /// export XERV_DATA_DIR=/var/lib/xerv
+    /// export XERV_ARENA_SYNC=true
+    /// export XERV_WAL_SYNC=true
+    /// export XERV_MAX_CONCURRENT_NODES=32
+    /// ```
+    pub fn from_env() -> Self {
+        let max_concurrent_nodes = std::env::var("XERV_MAX_CONCURRENT_NODES")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(16);
+
+        let max_concurrent_traces = std::env::var("XERV_MAX_CONCURRENT_TRACES")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(100);
+
+        let node_timeout_ms = std::env::var("XERV_NODE_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(30_000);
+
+        Self {
+            max_concurrent_traces,
+            max_concurrent_nodes,
+            node_timeout_ms,
+            arena_config: ArenaConfig::from_env_or_default(),
+            wal_config: WalConfig::from_env_or_default(),
+            dispatch_config: DispatchConfig::from_env_or_default(),
+        }
+    }
+
+    /// Create configuration from environment variables, or use defaults.
+    ///
+    /// Same as `from_env()` but always returns a valid configuration.
+    pub fn from_env_or_default() -> Self {
+        Self::from_env()
+    }
+
+    /// Set maximum concurrent nodes per trace.
+    pub fn with_max_concurrent_nodes(mut self, max: usize) -> Self {
+        self.max_concurrent_nodes = max.max(1); // At least 1
+        self
+    }
+
+    /// Create a production-ready configuration.
+    ///
+    /// This configuration:
+    /// - Reads from environment variables first (respects XERV_DATA_DIR)
+    /// - Falls back to production defaults (`/var/lib/xerv`)
+    /// - Enables sync-on-write for crash safety
+    /// - Sets reasonable concurrency limits
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // With environment variable set:
+    /// // XERV_DATA_DIR=/mnt/fast-storage
+    /// let config = ExecutorConfig::production()
+    ///     .with_max_concurrent_nodes(32);
+    /// // Will use /mnt/fast-storage/arenas and /mnt/fast-storage/wal
+    /// ```
+    pub fn production() -> Self {
+        // Start with environment-aware defaults
+        let mut config = Self::from_env();
+
+        // Override with production-specific settings if XERV_DATA_DIR is not set
+        if std::env::var("XERV_DATA_DIR").is_err() {
+            config.arena_config = ArenaConfig::default()
+                .with_directory("/var/lib/xerv/arenas")
+                .with_sync(true);
+            config.wal_config = WalConfig::default()
+                .with_directory("/var/lib/xerv/wal")
+                .with_sync(true);
+        }
+
+        // Ensure production timeout is at least 60 seconds
+        config.node_timeout_ms = config.node_timeout_ms.max(60_000);
+
+        config
+    }
+}
+
+impl ExecutorConfig {
     /// Set the dispatch configuration.
     pub fn with_dispatch(mut self, config: DispatchConfig) -> Self {
         self.dispatch_config = config;
         self
     }
+
+    /// Set the node timeout.
+    pub fn with_node_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.node_timeout_ms = timeout_ms;
+        self
+    }
+}
+
+/// Result of a single node execution task.
+#[derive(Debug)]
+struct NodeExecutionResult {
+    node_id: NodeId,
+    result: Result<NodeOutput>,
+}
+
+/// Captured context needed to execute a node in a spawned task.
+///
+/// This struct contains everything needed to execute a node without
+/// holding any references to TraceState.
+struct NodeExecutionContext {
+    trace_id: TraceId,
+    node_id: NodeId,
+    reader: ArenaReader,
+    writer: ArenaWriter,
+    wal: Arc<Wal>,
+    inputs: HashMap<String, RelPtr<()>>,
 }
 
 /// The main execution engine.
+///
+/// The executor manages trace lifecycle and schedules node executions concurrently.
+/// It uses a work-stealing approach where nodes are executed as soon as their
+/// dependencies are satisfied, up to a configurable concurrency limit.
 pub struct Executor {
     /// Configuration.
     pub(crate) config: ExecutorConfig,
     /// The flow graph.
     pub(crate) graph: Arc<FlowGraph>,
-    /// Node implementations.
-    pub(crate) nodes: Arc<HashMap<NodeId, Box<dyn Node>>>,
+    /// Node implementations (Arc-wrapped for concurrent task spawning).
+    pub(crate) nodes: HashMap<NodeId, Arc<Box<dyn Node>>>,
     /// Active traces.
     pub(crate) traces: Arc<DashMap<TraceId, TraceState>>,
     /// The WAL for durability.
@@ -104,6 +259,12 @@ impl Executor {
         graph.validate()?;
         let execution_order = graph.topological_sort()?;
 
+        // Wrap nodes in Arc for concurrent task spawning
+        let nodes: HashMap<NodeId, Arc<Box<dyn Node>>> = nodes
+            .into_iter()
+            .map(|(id, node)| (id, Arc::new(node)))
+            .collect();
+
         // Create default in-memory dispatch backend
         let dispatch: Arc<dyn DispatchBackend> =
             Arc::new(MemoryDispatch::new(config.dispatch_config.memory_config()));
@@ -111,7 +272,7 @@ impl Executor {
         Ok(Self {
             config,
             graph: Arc::new(graph),
-            nodes: Arc::new(nodes),
+            nodes,
             traces: Arc::new(DashMap::new()),
             wal,
             execution_order,
@@ -136,6 +297,12 @@ impl Executor {
         graph.validate()?;
         let execution_order = graph.topological_sort()?;
 
+        // Wrap nodes in Arc for concurrent task spawning
+        let nodes: HashMap<NodeId, Arc<Box<dyn Node>>> = nodes
+            .into_iter()
+            .map(|(id, node)| (id, Arc::new(node)))
+            .collect();
+
         // Create default in-memory dispatch backend
         let dispatch: Arc<dyn DispatchBackend> =
             Arc::new(MemoryDispatch::new(config.dispatch_config.memory_config()));
@@ -143,7 +310,7 @@ impl Executor {
         Ok(Self {
             config,
             graph: Arc::new(graph),
-            nodes: Arc::new(nodes),
+            nodes,
             traces: Arc::new(DashMap::new()),
             wal,
             execution_order,
@@ -223,261 +390,494 @@ impl Executor {
         Ok(trace_id)
     }
 
-    /// Execute a trace to completion.
+    /// Execute a trace to completion using concurrent DAG execution.
+    ///
+    /// This method executes nodes in parallel when their dependencies are satisfied,
+    /// maximizing throughput while respecting the DAG constraints.
+    ///
+    /// ## Algorithm
+    ///
+    /// 1. Create a semaphore with `max_concurrent_nodes` permits
+    /// 2. Loop:
+    ///    a. Find all ready nodes (dependencies met, not executing)
+    ///    b. For each ready node, acquire a semaphore permit and spawn a task
+    ///    c. Wait for any task to complete
+    ///    d. Process the result (update trace state, handle errors/suspension)
+    ///    e. Repeat until no more nodes to execute
+    ///
+    /// ## Error Handling
+    ///
+    /// On node failure, all running tasks are aborted and the trace is cleaned up.
+    /// On suspension request, running tasks complete before suspension.
     #[instrument(
         skip(self),
         fields(
             otel.kind = "internal",
             pipeline_id = ?self.pipeline_id,
             node_count = %self.execution_order.len(),
+            max_concurrent = %self.config.max_concurrent_nodes,
         )
     )]
     pub async fn execute_trace(&self, trace_id: TraceId) -> Result<()> {
-        // Get mutable access to trace state
-        let mut trace = self
+        // Verify trace exists
+        if !self.traces.contains_key(&trace_id) {
+            return Err(XervError::NodeExecution {
+                node_id: NodeId::new(0),
+                trace_id,
+                cause: "Trace not found".to_string(),
+            });
+        }
+
+        // Semaphore for limiting concurrent node executions
+        let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_nodes));
+
+        // JoinSet to track spawned tasks
+        let mut tasks: JoinSet<NodeExecutionResult> = JoinSet::new();
+
+        // Track which nodes have tasks spawned (to avoid double-spawning)
+        let mut spawned: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
+
+        loop {
+            // Find all ready nodes that haven't been spawned yet
+            let ready_nodes = self.find_ready_nodes(trace_id, &spawned)?;
+
+            // Spawn tasks for ready nodes
+            for node_id in ready_nodes {
+                // Mark as spawned to prevent double-spawning
+                spawned.insert(node_id);
+
+                // Prepare execution context (captures data without holding trace guard)
+                let exec_ctx = self.prepare_node_execution(trace_id, node_id)?;
+
+                // Get node reference
+                let node = Arc::clone(self.nodes.get(&node_id).ok_or_else(|| {
+                    XervError::NodeNotFound {
+                        node_name: format!("{}", node_id),
+                    }
+                })?);
+
+                // Mark node as executing in trace state
+                if let Some(mut trace) = self.traces.get_mut(&trace_id) {
+                    trace.mark_executing(node_id);
+                }
+
+                // Clone what we need for the spawned task
+                let semaphore = Arc::clone(&semaphore);
+                let timeout_ms = self.config.node_timeout_ms;
+                let log_collector = Arc::clone(&self.log_collector);
+                let pipeline_id = self.pipeline_id.clone();
+                let wal = Arc::clone(&self.wal);
+
+                // Spawn the task
+                tasks.spawn(async move {
+                    // Acquire semaphore permit (backpressure)
+                    let _permit = semaphore
+                        .acquire()
+                        .await
+                        .expect("semaphore should not be closed");
+
+                    // Execute the node
+                    let result = Self::execute_single_node(
+                        exec_ctx,
+                        node,
+                        timeout_ms,
+                        &log_collector,
+                        pipeline_id.as_deref(),
+                        &wal,
+                    )
+                    .await;
+
+                    NodeExecutionResult { node_id, result }
+                });
+            }
+
+            // If no tasks running and no ready nodes, we're done
+            if tasks.is_empty() {
+                break;
+            }
+
+            // Wait for any task to complete
+            let Some(join_result) = tasks.join_next().await else {
+                break;
+            };
+
+            // Handle task result
+            let execution_result = match join_result {
+                Ok(result) => result,
+                Err(join_error) => {
+                    // Task panicked - treat as fatal error
+                    let error_msg = if join_error.is_panic() {
+                        "Node task panicked".to_string()
+                    } else {
+                        "Node task was cancelled".to_string()
+                    };
+
+                    tracing::error!(
+                        trace_id = %trace_id,
+                        error = %error_msg,
+                        "Task join error"
+                    );
+
+                    // Abort all remaining tasks
+                    tasks.abort_all();
+
+                    // Cleanup trace
+                    if let Some((_, trace_state)) = self.traces.remove(&trace_id) {
+                        let _ = trace_state.cleanup();
+                    }
+
+                    return Err(XervError::NodePanic {
+                        node_id: NodeId::new(0),
+                        trace_id,
+                        message: error_msg,
+                    });
+                }
+            };
+
+            // Process the execution result
+            match self
+                .process_node_result(trace_id, execution_result, &mut tasks)
+                .await?
+            {
+                ExecutionAction::Continue => {
+                    // Normal case - continue the loop
+                }
+                ExecutionAction::Suspend => {
+                    // Trace was suspended - we're done (suspension handled inside)
+                    return Ok(());
+                }
+                ExecutionAction::Error(e) => {
+                    // Abort all remaining tasks
+                    tasks.abort_all();
+
+                    // Cleanup trace
+                    if let Some((_, trace_state)) = self.traces.remove(&trace_id) {
+                        let _ = trace_state.cleanup();
+                    }
+
+                    return Err(e);
+                }
+            }
+        }
+
+        // All nodes completed - finalize trace
+        self.finalize_trace(trace_id).await
+    }
+
+    /// Find all nodes that are ready to execute.
+    ///
+    /// A node is ready if:
+    /// - All its dependencies have completed
+    /// - It hasn't been spawned yet
+    /// - It's not already executing
+    fn find_ready_nodes(
+        &self,
+        trace_id: TraceId,
+        already_spawned: &std::collections::HashSet<NodeId>,
+    ) -> Result<Vec<NodeId>> {
+        let trace = self
             .traces
-            .get_mut(&trace_id)
+            .get(&trace_id)
             .ok_or_else(|| XervError::NodeExecution {
                 node_id: NodeId::new(0),
                 trace_id,
                 cause: "Trace not found".to_string(),
             })?;
 
-        // Execute nodes in topological order
-        for &node_id in &self.execution_order {
-            // Skip nodes that haven't been activated
-            if !trace.is_node_ready(node_id, &self.graph) {
-                continue;
+        let ready: Vec<NodeId> = self
+            .execution_order
+            .iter()
+            .filter(|&&node_id| {
+                !already_spawned.contains(&node_id) && trace.is_node_ready(node_id, &self.graph)
+            })
+            .copied()
+            .collect();
+
+        Ok(ready)
+    }
+
+    /// Prepare execution context for a node.
+    ///
+    /// This captures all data needed to execute the node without holding
+    /// any references to TraceState.
+    fn prepare_node_execution(
+        &self,
+        trace_id: TraceId,
+        node_id: NodeId,
+    ) -> Result<NodeExecutionContext> {
+        let trace = self
+            .traces
+            .get(&trace_id)
+            .ok_or_else(|| XervError::NodeExecution {
+                node_id,
+                trace_id,
+                cause: "Trace not found".to_string(),
+            })?;
+
+        let (reader, writer) = trace.arena_handles();
+        let inputs = trace.collect_inputs(node_id, &self.graph);
+
+        Ok(NodeExecutionContext {
+            trace_id,
+            node_id,
+            reader,
+            writer,
+            wal: Arc::clone(&self.wal),
+            inputs,
+        })
+    }
+
+    /// Execute a single node with timeout.
+    ///
+    /// This is the actual node execution logic, isolated for spawning.
+    async fn execute_single_node(
+        exec_ctx: NodeExecutionContext,
+        node: Arc<Box<dyn Node>>,
+        timeout_ms: u64,
+        log_collector: &BufferedCollector,
+        pipeline_id: Option<&str>,
+        wal: &Wal,
+    ) -> Result<NodeOutput> {
+        let trace_id = exec_ctx.trace_id;
+        let node_id = exec_ctx.node_id;
+
+        // Create execution context
+        let ctx = Context::new(
+            trace_id,
+            node_id,
+            exec_ctx.reader,
+            exec_ctx.writer,
+            exec_ctx.wal,
+        );
+
+        // Log node execution start
+        let node_info = node.info();
+        let mut start_event = LogEvent::debug(
+            LogCategory::Node,
+            format!("Executing node: {}", node_info.name),
+        )
+        .with_trace_id(trace_id)
+        .with_node_id(node_id)
+        .with_field("namespace", &node_info.namespace);
+        if let Some(pid) = pipeline_id {
+            start_event = start_event.with_pipeline_id(pid);
+        }
+        log_collector.collect(start_event);
+
+        // Create tracing span
+        let node_span = tracing::info_span!(
+            "node_execution",
+            otel.kind = "internal",
+            trace_id = %trace_id,
+            node_id = %node_id,
+            node_type = %node_info.name,
+            timeout_ms = %timeout_ms,
+        );
+
+        tracing::debug!(parent: &node_span, "Executing node");
+
+        // Execute with timeout
+        let result = node_span
+            .in_scope(|| async {
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    node.execute(ctx, exec_ctx.inputs),
+                )
+                .await
+            })
+            .await;
+
+        match result {
+            Ok(Ok(output)) => {
+                // Log completion based on output type
+                match &output {
+                    NodeOutput::Complete {
+                        port,
+                        data,
+                        schema_hash,
+                    } => {
+                        let (offset, size) = (data.offset(), data.size());
+
+                        // Log to WAL
+                        let record =
+                            WalRecord::node_done(trace_id, node_id, offset, size, *schema_hash);
+                        wal.write(&record)?;
+
+                        let mut done_event = LogEvent::info(
+                            LogCategory::Node,
+                            format!("Node completed: {}", node_info.name),
+                        )
+                        .with_trace_id(trace_id)
+                        .with_node_id(node_id)
+                        .with_field("output_port", port.clone())
+                        .with_field("output_size", size.to_string());
+                        if let Some(pid) = pipeline_id {
+                            done_event = done_event.with_pipeline_id(pid);
+                        }
+                        log_collector.collect(done_event);
+
+                        tracing::debug!(
+                            trace_id = %trace_id,
+                            node_id = %node_id,
+                            port = %port,
+                            "Node completed"
+                        );
+                    }
+                    NodeOutput::Error { message, .. } => {
+                        // Log to WAL
+                        let record = WalRecord::node_error(trace_id, node_id, message.clone());
+                        wal.write(&record)?;
+
+                        let mut error_event = LogEvent::error(
+                            LogCategory::Node,
+                            format!("Node returned error: {}", node_info.name),
+                        )
+                        .with_trace_id(trace_id)
+                        .with_node_id(node_id)
+                        .with_field("error", message.clone());
+                        if let Some(pid) = pipeline_id {
+                            error_event = error_event.with_pipeline_id(pid);
+                        }
+                        log_collector.collect(error_event);
+
+                        tracing::warn!(
+                            trace_id = %trace_id,
+                            node_id = %node_id,
+                            error = %message,
+                            "Node returned error output"
+                        );
+                    }
+                    NodeOutput::Suspend { request, .. } => {
+                        tracing::info!(
+                            trace_id = %trace_id,
+                            node_id = %node_id,
+                            hook_id = %request.hook_id,
+                            "Node requested suspension"
+                        );
+                    }
+                }
+                Ok(output)
             }
+            Ok(Err(e)) => {
+                // Node execution error
+                let record = WalRecord::node_error(trace_id, node_id, e.to_string());
+                wal.write(&record)?;
 
-            // Get the node implementation
-            let node = self
-                .nodes
-                .get(&node_id)
-                .ok_or_else(|| XervError::NodeNotFound {
-                    node_name: format!("{}", node_id),
-                })?;
+                let mut error_event = LogEvent::error(
+                    LogCategory::Node,
+                    format!("Node failed: {}", node_info.name),
+                )
+                .with_trace_id(trace_id)
+                .with_node_id(node_id)
+                .with_field("error", e.to_string());
+                if let Some(pid) = pipeline_id {
+                    error_event = error_event.with_pipeline_id(pid);
+                }
+                log_collector.collect(error_event);
 
-            // Collect inputs from upstream nodes
-            let inputs = trace.collect_inputs(node_id, &self.graph);
+                tracing::error!(
+                    trace_id = %trace_id,
+                    node_id = %node_id,
+                    error = %e,
+                    "Node failed"
+                );
 
-            // Create execution context
-            let (reader, writer) = trace.arena_handles();
-            let ctx = Context::new(trace_id, node_id, reader, writer, Arc::clone(&self.wal));
-
-            // Log node execution start
-            let node_info = node.info();
-            let mut start_event = LogEvent::debug(
-                LogCategory::Node,
-                format!("Executing node: {}", node_info.name),
-            )
-            .with_trace_id(trace_id)
-            .with_node_id(node_id)
-            .with_field("namespace", &node_info.namespace);
-            if let Some(ref pid) = self.pipeline_id {
-                start_event = start_event.with_pipeline_id(pid);
+                Err(e)
             }
-            self.log_collector.collect(start_event);
+            Err(_timeout) => {
+                // Timeout
+                let record = WalRecord::node_error(trace_id, node_id, "Timeout");
+                wal.write(&record)?;
 
-            // Create a span for this node execution for distributed tracing
-            let node_span = tracing::info_span!(
-                "node_execution",
-                otel.kind = "internal",
-                trace_id = %trace_id,
-                node_id = %node_id,
-                node_type = %node_info.name,
-                timeout_ms = %self.config.node_timeout_ms,
-            );
+                let mut timeout_event = LogEvent::error(
+                    LogCategory::Node,
+                    format!("Node timeout: {}", node_info.name),
+                )
+                .with_trace_id(trace_id)
+                .with_node_id(node_id)
+                .with_field_i64("timeout_ms", timeout_ms as i64);
+                if let Some(pid) = pipeline_id {
+                    timeout_event = timeout_event.with_pipeline_id(pid);
+                }
+                log_collector.collect(timeout_event);
 
-            tracing::debug!(
-                parent: &node_span,
-                "Executing node"
-            );
-
-            let result = node_span
-                .in_scope(|| async {
-                    tokio::time::timeout(
-                        std::time::Duration::from_millis(self.config.node_timeout_ms),
-                        node.execute(ctx, inputs),
-                    )
-                    .await
+                Err(XervError::NodeTimeout {
+                    node_id,
+                    trace_id,
+                    timeout_ms,
                 })
-                .await;
-
-            match result {
-                Ok(Ok(output)) => {
-                    // Handle the output based on its variant
-                    match output {
-                        NodeOutput::Complete {
-                            ref port,
-                            ref data,
-                            schema_hash,
-                        } => {
-                            let (offset, size) = (data.offset(), data.size());
-                            let port_clone = port.clone();
-
-                            // Log to WAL with actual output location
-                            let record =
-                                WalRecord::node_done(trace_id, node_id, offset, size, schema_hash);
-                            self.wal.write(&record)?;
-
-                            // Log node completion
-                            let mut done_event = LogEvent::info(
-                                LogCategory::Node,
-                                format!("Node completed: {}", node_info.name),
-                            )
-                            .with_trace_id(trace_id)
-                            .with_node_id(node_id)
-                            .with_field("output_port", port_clone.clone())
-                            .with_field("output_size", size.to_string());
-                            if let Some(ref pid) = self.pipeline_id {
-                                done_event = done_event.with_pipeline_id(pid);
-                            }
-                            self.log_collector.collect(done_event);
-
-                            tracing::debug!(
-                                trace_id = %trace_id,
-                                node_id = %node_id,
-                                port = %port_clone,
-                                "Node completed"
-                            );
-
-                            // Store output and update trace state
-                            trace.record_output(node_id, output);
-                        }
-
-                        NodeOutput::Error { ref message, .. } => {
-                            let message_clone = message.clone();
-
-                            // Log to WAL
-                            let record =
-                                WalRecord::node_error(trace_id, node_id, message_clone.clone());
-                            self.wal.write(&record)?;
-
-                            // Log node error
-                            let mut error_event = LogEvent::error(
-                                LogCategory::Node,
-                                format!("Node returned error: {}", node_info.name),
-                            )
-                            .with_trace_id(trace_id)
-                            .with_node_id(node_id)
-                            .with_field("error", message_clone.clone());
-                            if let Some(ref pid) = self.pipeline_id {
-                                error_event = error_event.with_pipeline_id(pid);
-                            }
-                            self.log_collector.collect(error_event);
-
-                            tracing::warn!(
-                                trace_id = %trace_id,
-                                node_id = %node_id,
-                                error = %message_clone,
-                                "Node returned error output"
-                            );
-
-                            // Store the error output for downstream error handling
-                            trace.record_output(node_id, output);
-                        }
-
-                        NodeOutput::Suspend {
-                            ref request,
-                            ref pending_data,
-                        } => {
-                            // Handle suspension - node requests human-in-the-loop approval
-                            let hook_id = request.hook_id.clone();
-                            let request_clone = request.clone();
-                            let pending_offset = pending_data.offset();
-                            let pending_size = pending_data.size();
-
-                            tracing::info!(
-                                trace_id = %trace_id,
-                                node_id = %node_id,
-                                hook_id = %hook_id,
-                                "Node requested suspension"
-                            );
-
-                            // Drop the trace guard before calling suspend_trace
-                            // which needs to remove the trace from the map
-                            drop(trace);
-
-                            // Suspend the trace
-                            return self
-                                .suspend_trace(
-                                    trace_id,
-                                    node_id,
-                                    request_clone,
-                                    pending_offset,
-                                    pending_size,
-                                )
-                                .await;
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    // Node execution error
-                    let record = WalRecord::node_error(trace_id, node_id, e.to_string());
-                    self.wal.write(&record)?;
-
-                    // Log node error
-                    let mut error_event = LogEvent::error(
-                        LogCategory::Node,
-                        format!("Node failed: {}", node_info.name),
-                    )
-                    .with_trace_id(trace_id)
-                    .with_node_id(node_id)
-                    .with_field("error", e.to_string());
-                    if let Some(ref pid) = self.pipeline_id {
-                        error_event = error_event.with_pipeline_id(pid);
-                    }
-                    self.log_collector.collect(error_event);
-
-                    tracing::error!(
-                        trace_id = %trace_id,
-                        node_id = %node_id,
-                        error = %e,
-                        "Node failed"
-                    );
-
-                    // Remove trace from active set before returning error
-                    drop(trace);
-                    self.traces.remove(&trace_id);
-
-                    return Err(XervError::NodeExecution {
-                        node_id,
-                        trace_id,
-                        cause: e.to_string(),
-                    });
-                }
-                Err(_) => {
-                    // Timeout - log error
-                    let record = WalRecord::node_error(trace_id, node_id, "Timeout");
-                    self.wal.write(&record)?;
-
-                    let mut timeout_event = LogEvent::error(
-                        LogCategory::Node,
-                        format!("Node timeout: {}", node_info.name),
-                    )
-                    .with_trace_id(trace_id)
-                    .with_node_id(node_id)
-                    .with_field_i64("timeout_ms", self.config.node_timeout_ms as i64);
-                    if let Some(ref pid) = self.pipeline_id {
-                        timeout_event = timeout_event.with_pipeline_id(pid);
-                    }
-                    self.log_collector.collect(timeout_event);
-
-                    // Remove trace from active set before returning error
-                    drop(trace);
-                    self.traces.remove(&trace_id);
-
-                    return Err(XervError::NodeTimeout {
-                        node_id,
-                        trace_id,
-                        timeout_ms: self.config.node_timeout_ms,
-                    });
-                }
             }
         }
+    }
 
-        // Mark trace as complete
+    /// Process the result of a node execution.
+    ///
+    /// Updates trace state and determines what action to take next.
+    async fn process_node_result(
+        &self,
+        trace_id: TraceId,
+        result: NodeExecutionResult,
+        tasks: &mut JoinSet<NodeExecutionResult>,
+    ) -> Result<ExecutionAction> {
+        let node_id = result.node_id;
+
+        match result.result {
+            Ok(output) => {
+                match &output {
+                    NodeOutput::Complete { .. } | NodeOutput::Error { .. } => {
+                        // Update trace state
+                        if let Some(mut trace) = self.traces.get_mut(&trace_id) {
+                            trace.record_output(node_id, output);
+                        }
+                        Ok(ExecutionAction::Continue)
+                    }
+                    NodeOutput::Suspend {
+                        request,
+                        pending_data,
+                    } => {
+                        // Drain remaining tasks before suspension
+                        // (let them complete, but don't start new ones)
+                        while let Some(join_result) = tasks.join_next().await {
+                            if let Ok(other_result) = join_result {
+                                // Record completed node outputs
+                                if let Ok(other_output) = other_result.result {
+                                    if let Some(mut trace) = self.traces.get_mut(&trace_id) {
+                                        if !other_output.is_suspended() {
+                                            trace.record_output(other_result.node_id, other_output);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Now suspend the trace
+                        self.suspend_trace(
+                            trace_id,
+                            node_id,
+                            request.clone(),
+                            pending_data.offset(),
+                            pending_data.size(),
+                        )
+                        .await?;
+
+                        Ok(ExecutionAction::Suspend)
+                    }
+                }
+            }
+            Err(e) => {
+                // Node failed - determine if this is a fatal error
+                Ok(ExecutionAction::Error(XervError::NodeExecution {
+                    node_id,
+                    trace_id,
+                    cause: e.to_string(),
+                }))
+            }
+        }
+    }
+
+    /// Finalize a completed trace.
+    async fn finalize_trace(&self, trace_id: TraceId) -> Result<()> {
+        // Mark trace as complete in WAL
         let record = WalRecord::trace_complete(trace_id);
         self.wal.write(&record)?;
 
@@ -543,6 +943,16 @@ impl Executor {
             trace_count
         );
     }
+}
+
+/// Action to take after processing a node result.
+enum ExecutionAction {
+    /// Continue executing more nodes.
+    Continue,
+    /// Trace was suspended.
+    Suspend,
+    /// Fatal error occurred.
+    Error(XervError),
 }
 
 #[cfg(test)]

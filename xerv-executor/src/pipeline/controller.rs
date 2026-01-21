@@ -405,8 +405,8 @@ impl PipelineBuilder {
             nodes: HashMap::new(),
             triggers: Vec::new(),
             hooks: None,
-            wal_config: WalConfig::default(),
-            executor_config: ExecutorConfig::default(),
+            wal_config: WalConfig::from_env_or_default(),
+            executor_config: ExecutorConfig::from_env_or_default(),
             log_collector: None,
         }
     }
