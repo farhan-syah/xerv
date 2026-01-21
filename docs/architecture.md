@@ -659,11 +659,57 @@ sequenceDiagram
     Pipeline-->>Webhook: HTTP 200 with trace ID
 ```
 
+## Dispatch Backends and Scaling
+
+XERV supports multiple dispatch backends to handle different deployment scenarios and scale profiles. The **dispatch backend** is responsible for queuing and coordinating trace execution across nodes.
+
+### Backend Options
+
+| Backend    | Best For                                             | Throughput        | Scaling                | Zero-Deps | HA  |
+| ---------- | ---------------------------------------------------- | ----------------- | ---------------------- | --------- | --- |
+| **Memory** | Development, single-machine edge deployments         | 10k+/sec          | Vertical only          | ✅        | ❌  |
+| **Raft**   | Multi-node consensus, on-premises, zero dependencies | Consensus limited | Horizontal (odd count) | ✅        | ✅  |
+| **Redis**  | Cloud-native, high throughput, stateless workers     | 50k+/sec          | Horizontal (unlimited) | ❌        | ✅  |
+| **NATS**   | Streaming, multi-region, scale-to-zero               | 50k+/sec          | Horizontal (unlimited) | ❌        | ✅  |
+
+**Configuration:**
+
+```yaml
+# Memory (default, no config needed)
+dispatch:
+  backend: memory
+
+# Raft with 3 replicas
+dispatch:
+  backend: raft
+  raft:
+    nodeId: 1
+    peers:
+      - { id: 2, addr: "node2:5000" }
+      - { id: 3, addr: "node3:5000" }
+
+# Redis with connection pooling
+dispatch:
+  backend: redis
+  redis:
+    url: "redis://redis-cluster:6379"
+    poolSize: 20
+
+# NATS with JetStream persistence
+dispatch:
+  backend: nats
+  nats:
+    url: "nats://nats:4222"
+    jetstream: true
+```
+
+For Kubernetes deployments, see the [Helm Chart Documentation](../charts/xerv/README.md#configuration) for complete configuration options.
+
 ## Execution Modes
 
-XERV supports two execution modes with different trade-offs. Choose based on your requirements:
+XERV supports different execution modes depending on your deployment backend. Choose based on your requirements:
 
-### Local Mode (Single-Node)
+### Local Mode (Single-Node, Memory Backend)
 
 **Best for:** High-throughput, low-latency workloads on a single machine.
 
@@ -704,13 +750,15 @@ let executor = Executor::new(flow_graph)?;
 executor.run(trace).await?;
 ```
 
-### Distributed Mode (Cluster)
+### Cloud-Native Mode (Raft/Redis/NATS Backend)
 
-**Best for:** High availability and horizontal scaling across multiple machines.
+**Best for:** High availability, horizontal scaling, and cloud deployments.
+
+**With Raft Backend:**
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                  XERV Cluster Mode                       │
+│                  XERV Raft Cluster                       │
 │                                                          │
 │  ┌──────────┐    ┌──────────┐    ┌──────────┐          │
 │  │  Node 1  │◄──▶│  Node 2  │◄──▶│  Node 3  │          │
@@ -726,21 +774,41 @@ executor.run(trace).await?;
 └─────────────────────────────────────────────────────────┘
 ```
 
+**With Redis/NATS Backend:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              XERV Stateless Workers                       │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │ Worker 1 │  │ Worker 2 │  │ Worker N │              │
+│  │(Stateless)  │(Stateless)  │(Stateless)              │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘              │
+│       │             │             │                     │
+│       └─────────────┼─────────────┘                     │
+│                     │                                   │
+│        ┌────────────▼────────────┐                      │
+│        │ Redis Streams or        │                      │
+│        │ NATS JetStream          │                      │
+│        │ (Shared Queue)          │                      │
+│        └─────────────────────────┘                      │
+└─────────────────────────────────────────────────────────┘
+```
+
 **Characteristics:**
 
-- **Automatic failover** - Leader election if current leader fails
+- **Automatic failover** - Raft: leader election; Redis/NATS: consumer groups handle it
 - **State replication** - Pipeline definitions synced across nodes
-- **Network overhead** - Consensus requires gRPC communication
-- **Horizontal scaling** - Distribute load across nodes
+- **Horizontal scaling** - Easily add/remove workers (Redis/NATS) or carefully manage cluster membership (Raft)
+- **Network efficiency** - Minimal overhead with Redis/NATS; gRPC only for Raft peers
 
-**When to use:**
+**When to use each backend:**
 
-- Production deployments requiring high availability
-- Geographic distribution (nodes closer to data sources)
-- Workloads that can tolerate slightly higher latency for reliability
-- Teams needing zero-downtime deployments
+- **Raft** - Production on-premises, zero external dependencies, high availability required
+- **Redis** - Cloud deployments, AWS, Google Cloud, Azure; high throughput needed; want managed service
+- **NATS** - Multi-region deployments, streaming architecture, scale-to-zero with KEDA
 
-**Configuration:**
+**Configuration for Raft:**
 
 ```rust
 use xerv_cluster::{ClusterConfig, ClusterNode};
@@ -757,28 +825,59 @@ let config = ClusterConfig::builder()
 let node = ClusterNode::start(config).await?;
 ```
 
-### Mode Comparison
+**Configuration for Redis/NATS:**
 
-| Aspect            | Local Mode                | Cluster Mode                    |
-| ----------------- | ------------------------- | ------------------------------- |
-| **Throughput**    | Highest (10k+ traces/sec) | Moderate (limited by consensus) |
-| **Latency**       | Lowest (sub-ms possible)  | Higher (consensus round-trips)  |
-| **Availability**  | Single point of failure   | Automatic failover              |
-| **Data locality** | Zero-copy via RelPtr      | Network serialization required  |
-| **Complexity**    | Simple deployment         | Requires cluster coordination   |
-| **Use case**      | Edge, dev, high-frequency | Production HA, multi-region     |
+See [Helm Chart Documentation](../charts/xerv/README.md#configuration) for production setups with example values files.
+
+### Execution Mode Comparison
+
+| Aspect           | Local (Memory) | Raft Cluster  | Redis Backend | NATS Backend |
+| ---------------- | -------------- | ------------- | ------------- | ------------ |
+| **Throughput**   | 10k+/sec       | Consensus     | 50k+/sec      | 50k+/sec     |
+| **Latency**      | Sub-ms         | ~10-50ms      | ~5-20ms       | ~5-20ms      |
+| **Availability** | Single point   | Automatic     | Automatic     | Automatic    |
+| **Zero-copy**    | ✅ RelPtr      | ✅ RelPtr     | Network I/O   | Network I/O  |
+| **Scaling**      | Vertical only  | Horizontal    | Horizontal    | Horizontal   |
+| **Zero-deps**    | ✅             | ✅            | ❌            | ❌           |
+| **Cloud-native** | ⚠️ Manual      | ⚠️ Complex    | ✅ Simple     | ✅ Simple    |
+| **Use case**     | Dev, edge      | Production HA | Cloud, scale  | Streaming    |
 
 ### Architectural Trade-offs
 
 **Zero-copy vs. Distribution:**
-The RelPtr mechanism that enables zero-copy data passing is inherently local - offsets reference positions in a memory-mapped file on a single machine. When running in cluster mode:
 
-1. **Trace affinity** - A trace executes entirely on one node (the arena is local)
-2. **Work distribution** - The leader assigns new traces to nodes, but doesn't migrate mid-execution
-3. **Metadata replication** - Pipeline definitions and completion status are replicated via Raft
-4. **Data remains local** - Arena files are not replicated (would negate zero-copy benefits)
+The RelPtr mechanism that enables zero-copy data passing is inherently local - offsets reference positions in a memory-mapped file on a single machine. XERV's dispatch backend architecture handles this elegantly:
 
-This design preserves the zero-copy performance advantage while enabling cluster-level coordination and failover.
+**Memory Backend (Local Mode):**
+
+1. **Zero-copy** - All data passes via RelPtr offsets
+2. **Maximum performance** - Sub-millisecond node execution
+3. **Trade-off** - Single point of failure
+
+**Raft Backend (Consensus Mode):**
+
+1. **Trace affinity** - A trace executes entirely on one node (arena is local to that node)
+2. **Work distribution** - Leader assigns new traces to nodes via Raft
+3. **Metadata replication** - Pipeline definitions and state replicated via Raft consensus
+4. **Data remains local** - Arena files not replicated (preserve zero-copy)
+5. **Trade-off** - Consensus overhead, must maintain odd quorum size
+
+**Redis Backend (Stateless Mode):**
+
+1. **Stateless workers** - Any worker can execute any trace
+2. **Shared queue** - Redis Streams coordinate work distribution
+3. **Automatic load balancing** - Consumer groups balance traces across workers
+4. **Trade-off** - Network I/O for queue coordination; external dependency
+
+**NATS Backend (Streaming Mode):**
+
+1. **Stateless workers** - Any worker can execute any trace
+2. **Event streaming** - NATS JetStream provides persistent queue
+3. **Multi-region ready** - Super-clusters enable geographic distribution
+4. **Scale-to-zero** - KEDA compatible for serverless deployments
+5. **Trade-off** - Network I/O for queue coordination; external dependency
+
+Each backend preserves the core XERV design while enabling different deployment scenarios. Choose based on your infrastructure and scale requirements.
 
 ## Performance Characteristics
 
