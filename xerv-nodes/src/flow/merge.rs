@@ -4,6 +4,7 @@
 //! It collects data from multiple upstream nodes and merges them into
 //! a single output.
 
+use rkyv;
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
@@ -85,43 +86,74 @@ impl Node for MergeNode {
             .with_outputs(vec![Port::output("Any"), Port::error()])
     }
 
-    fn execute<'a>(&'a self, _ctx: Context, inputs: HashMap<String, RelPtr<()>>) -> NodeFuture<'a> {
+    fn execute<'a>(&'a self, ctx: Context, inputs: HashMap<String, RelPtr<()>>) -> NodeFuture<'a> {
         Box::pin(async move {
             let received = inputs.len();
 
-            match &self.strategy {
-                MergeStrategy::WaitAll => {
-                    if received < self.expected_inputs {
-                        tracing::debug!(
-                            expected = self.expected_inputs,
-                            received = received,
-                            "Merge waiting for more inputs"
-                        );
-                        // In a real implementation, this would block until all inputs arrive.
-                        // For now, we proceed with what we have.
-                    }
-                }
-                MergeStrategy::FirstArrival => {
-                    // Proceed as soon as any input arrives
-                }
-                MergeStrategy::WaitN(n) => {
-                    if received < *n {
-                        tracing::debug!(
-                            expected = n,
-                            received = received,
-                            "Merge waiting for more inputs (wait_n)"
-                        );
-                    }
+            // Validate we have the expected number of inputs based on strategy
+            let required_count = match &self.strategy {
+                MergeStrategy::WaitAll => self.expected_inputs,
+                MergeStrategy::FirstArrival => 1,
+                MergeStrategy::WaitN(n) => *n,
+            };
+
+            if received < required_count {
+                tracing::warn!(
+                    expected = required_count,
+                    received = received,
+                    strategy = ?self.strategy,
+                    "Merge node executed with fewer inputs than expected"
+                );
+                // This shouldn't happen if the scheduler is working correctly,
+                // but we handle it gracefully by proceeding with available inputs
+            }
+
+            if inputs.is_empty() {
+                // No inputs received - return null pointer
+                return Ok(NodeOutput::out(RelPtr::<()>::null()));
+            }
+
+            // Convert to sorted vector for deterministic output
+            let mut sorted_inputs: Vec<(String, RelPtr<()>)> = inputs.into_iter().collect();
+            sorted_inputs.sort_by(|a, b| a.0.cmp(&b.0));
+
+            // For FirstArrival strategy, return the first input immediately
+            if matches!(self.strategy, MergeStrategy::FirstArrival) {
+                if let Some((_, ptr)) = sorted_inputs.first() {
+                    return Ok(NodeOutput::out(*ptr));
                 }
             }
 
-            // For now, return the first input as the merged output.
-            // A proper implementation would combine all inputs into a single structure.
-            if let Some((_, ptr)) = inputs.into_iter().next() {
-                Ok(NodeOutput::out(ptr))
-            } else {
-                Ok(NodeOutput::out(RelPtr::<()>::null()))
-            }
+            // Serialize the merged inputs structure
+            // We use rkyv for efficient zero-copy serialization
+            let merged_bytes =
+                rkyv::to_bytes::<rkyv::rancor::Error>(&sorted_inputs).map_err(|e| {
+                    xerv_core::error::XervError::Serialization(format!(
+                        "Failed to serialize merged inputs: {}",
+                        e
+                    ))
+                })?;
+
+            // Write to arena
+            let merged_ptr = ctx.write_bytes(&merged_bytes).map_err(|e| match e {
+                xerv_core::error::XervError::ArenaCapacity {
+                    requested,
+                    available,
+                } => xerv_core::error::XervError::ArenaCapacity {
+                    requested,
+                    available,
+                },
+                other => other,
+            })?;
+
+            tracing::debug!(
+                inputs_merged = sorted_inputs.len(),
+                bytes = merged_bytes.len(),
+                "Merge node combined {} inputs",
+                sorted_inputs.len()
+            );
+
+            Ok(NodeOutput::out(merged_ptr))
         })
     }
 }

@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use xerv_core::error::{Result, XervError};
 use xerv_core::traits::{Trigger, TriggerConfig, TriggerEvent, TriggerFuture, TriggerType};
+use xerv_core::types::RelPtr;
 
 #[cfg(feature = "kafka")]
 use rdkafka::Message;

@@ -111,7 +111,7 @@ impl FilesystemTrigger {
         } else {
             // For non-existent paths, do basic checks on the path string
             // (will be fully validated when trigger starts)
-            Self::validate_path_syntax(&path_str)?;
+            Self::validate_path_syntax(path_str)?;
         }
 
         let recursive = config.get_bool("recursive").unwrap_or(false);

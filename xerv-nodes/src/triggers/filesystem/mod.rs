@@ -71,7 +71,7 @@ mod tests {
             .recursive()
             .watch_create_only();
 
-        assert!(trigger.is_running() == false);
+        assert!(!trigger.is_running());
     }
 
     // ========== Path Security Tests ==========

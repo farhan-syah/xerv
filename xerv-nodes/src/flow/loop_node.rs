@@ -369,25 +369,26 @@ impl Node for LoopNode {
                 }
             };
 
-            // In a real implementation, we'd track iteration count in the trace state.
-            // The executor would call ctx.loop_iteration() to get/increment.
-            // For now, we demonstrate the structure with a placeholder.
-            // TODO: Implement iteration tracking in executor/trace state
-            let iteration = 0_u32; // Would be: ctx.get_loop_iteration(node_id)
+            // Get current iteration count from context's trace state
+            let loop_node_id = ctx.node_id();
+            let iteration = ctx.get_loop_iteration(loop_node_id);
 
             let should_exit = self.should_exit(&value, iteration);
 
             tracing::debug!(
+                node_id = %loop_node_id,
                 iteration = iteration,
                 should_exit = should_exit,
                 "Loop iteration decision"
             );
 
             if should_exit {
-                // Exit the loop
+                // Exit the loop - reset iteration counter for potential re-entry
+                ctx.reset_loop_iteration(loop_node_id);
                 Ok(NodeOutput::new("exit", input))
             } else {
-                // Continue looping
+                // Continue looping - increment iteration counter
+                ctx.increment_loop_iteration(loop_node_id);
                 Ok(NodeOutput::new("continue", input))
             }
         })
