@@ -522,6 +522,7 @@ impl ArenaReader {
 /// A write handle to an arena.
 ///
 /// Only one writer should be active at a time for correctness.
+#[derive(Clone)]
 pub struct ArenaWriter {
     inner: Arc<RwLock<ArenaInner>>,
     trace_id: TraceId,
