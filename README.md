@@ -5,6 +5,7 @@ XERV is a workflow orchestration platform for building data pipelines and automa
 **Key characteristics:**
 
 - **Memory-mapped arena** for efficient data passing between pipeline stages
+- **Concurrent DAG execution** with work-stealing scheduler and backpressure control
 - **Async pipeline execution** with topological DAG scheduling
 - **YAML-based flow definitions** with no visual editor needed
 - **Standard library nodes** for merge, split, switch, loop operations
@@ -179,8 +180,9 @@ graph TB
     subgraph EP["Execution Plane (Executor + Scheduler)"]
         EP1["DAG validation"]
         EP2["Topological sort"]
-        EP3["Concurrent node execution"]
+        EP3["Concurrent node execution<br/>(work-stealing scheduler)"]
         EP4["Selector resolution<br/>(${node.field} → arena offsets)"]
+        EP5["Semaphore backpressure<br/>(max_concurrent_nodes)"]
     end
 
     subgraph DP["Data Plane (Arena + WAL)"]
@@ -419,6 +421,7 @@ xerv/
 ├── xerv-core/       # Arena, WAL, core traits, dispatch backends (Memory/Raft/Redis/NATS)
 ├── xerv-nodes/      # Standard library (merge, split, switch, loop, wait, etc.)
 ├── xerv-executor/   # Scheduler, linker, pipeline controller, REST API, observability
+├── xerv-client/     # Client library for programmatic API access
 ├── xerv-cluster/    # Distributed clustering with OpenRaft consensus
 ├── xerv-operator/   # Kubernetes operator for advanced deployments
 ├── xerv-cli/        # CLI binary (serve, inspect, validate)

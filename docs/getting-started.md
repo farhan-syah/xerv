@@ -22,6 +22,44 @@ For WASM support:
 xerv-executor = { version = "0.1", features = ["wasm"] }
 ```
 
+### Using the Client Library
+
+To programmatically interact with a running XERV server, use `xerv-client`:
+
+```toml
+[dependencies]
+xerv-client = "0.1"
+```
+
+Example client usage:
+
+```rust
+use xerv_client::Client;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Connect to XERV server
+    let client = Client::new("http://localhost:8080")?;
+
+    // Deploy a pipeline
+    let yaml = std::fs::read_to_string("flows/order_processing.yaml")?;
+    let pipeline = client.deploy_pipeline(&yaml).await?;
+    println!("Deployed: {}", pipeline.pipeline_id);
+
+    // Query logs
+    let logs = client.query_logs(None, None, None, None, Some(100)).await?;
+    for log in logs {
+        println!("[{}] {}: {}", log.timestamp, log.level, log.message);
+    }
+
+    // Get metrics
+    let metrics = client.get_metrics().await?;
+    println!("Active traces: {}", metrics.active_traces);
+
+    Ok(())
+}
+```
+
 ## Basic Example: Order Processing
 
 Let's build a simple order processing pipeline that validates orders and routes them based on fraud risk.

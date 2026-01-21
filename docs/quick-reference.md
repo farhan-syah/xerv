@@ -4,45 +4,46 @@ Fast lookup for common tasks and commands.
 
 ## Node Types
 
-| Node | Purpose | Input Ports | Output Ports |
-|------|---------|-------------|--------------|
-| `std::merge` | Wait for multiple inputs | N/A | `out` |
-| `std::split` | Fan-out to collection items | `in` | `item`, `done` |
-| `std::switch` | Conditional routing | `in` | `true`, `false` |
-| `std::loop` | Iteration with exit condition | `in` | `body`, `done` |
-| `std::wait` | Human-in-the-loop approval | `in` | `out`, `rejected`, `escalated` |
-| `std::map` | Field transformation | `in` | `out` |
-| `std::concat` | String concatenation | `in` | `out` |
-| `std::aggregate` | Numeric aggregation | `in` | `out` |
-| `std::json_dynamic` | Dynamic JSON field access | `in` | `out` |
+| Node                | Purpose                       | Input Ports | Output Ports                   |
+| ------------------- | ----------------------------- | ----------- | ------------------------------ |
+| `std::merge`        | Wait for multiple inputs      | N/A         | `out`                          |
+| `std::split`        | Fan-out to collection items   | `in`        | `item`, `done`                 |
+| `std::switch`       | Conditional routing           | `in`        | `true`, `false`                |
+| `std::loop`         | Iteration with exit condition | `in`        | `body`, `done`                 |
+| `std::wait`         | Human-in-the-loop approval    | `in`        | `out`, `rejected`, `escalated` |
+| `std::map`          | Field transformation          | `in`        | `out`                          |
+| `std::concat`       | String concatenation          | `in`        | `out`                          |
+| `std::aggregate`    | Numeric aggregation           | `in`        | `out`                          |
+| `std::json_dynamic` | Dynamic JSON field access     | `in`        | `out`                          |
 
 ## Trigger Types
 
-| Trigger | Purpose | Configuration |
-|---------|---------|----------------|
-| `webhook` | HTTP POST endpoint | `port`, `path` |
-| `cron` | Scheduled execution | `schedule` (cron expr), `timezone` |
-| `filesystem` | File system events | `paths`, `events`, `patterns` |
-| `queue` | In-memory message queue | `name`, `capacity` |
-| `kafka` | Kafka topic consumer | `brokers`, `topic`, `group_id` |
-| `manual` | Manual trigger (testing) | None |
-| `memory` | Direct memory injection (benchmarks) | None |
+| Trigger      | Purpose                              | Configuration                      |
+| ------------ | ------------------------------------ | ---------------------------------- |
+| `webhook`    | HTTP POST endpoint                   | `port`, `path`                     |
+| `cron`       | Scheduled execution                  | `schedule` (cron expr), `timezone` |
+| `filesystem` | File system events                   | `paths`, `events`, `patterns`      |
+| `queue`      | In-memory message queue              | `name`, `capacity`                 |
+| `kafka`      | Kafka topic consumer                 | `brokers`, `topic`, `group_id`     |
+| `manual`     | Manual trigger (testing)             | None                               |
+| `memory`     | Direct memory injection (benchmarks) | None                               |
 
 ## REST API Endpoints
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| `GET` | `/health` | Health check |
-| `GET` | `/pipelines` | List pipelines |
-| `GET` | `/pipelines/{id}` | Get pipeline details |
-| `GET` | `/traces` | List traces (filterable) |
-| `GET` | `/traces/{id}` | Get trace details |
-| `GET` | `/traces/{id}/logs` | Get trace logs |
-| `GET` | `/traces/{id}/logs/stream` | Stream trace logs (SSE) |
-| `GET` | `/triggers` | List active triggers |
-| `POST` | `/triggers/{id}/fire` | Manually fire trigger |
-| `GET` | `/suspensions` | Get suspended traces |
-| `POST` | `/suspensions/{id}/resume` | Resume suspended trace |
+| Method | Endpoint                   | Purpose                       |
+| ------ | -------------------------- | ----------------------------- |
+| `GET`  | `/health`                  | Health check                  |
+| `GET`  | `/pipelines`               | List pipelines                |
+| `GET`  | `/pipelines/{id}`          | Get pipeline details          |
+| `GET`  | `/traces`                  | List traces (filterable)      |
+| `GET`  | `/traces/{id}`             | Get trace details             |
+| `GET`  | `/traces/{id}/logs`        | Get trace logs                |
+| `GET`  | `/traces/{id}/logs/stream` | Stream trace logs (SSE)       |
+| `GET`  | `/triggers`                | List active triggers          |
+| `POST` | `/triggers/{id}/fire`      | Manually fire trigger         |
+| `GET`  | `/suspensions`             | Get suspended traces          |
+| `POST` | `/suspensions/{id}/resume` | Resume suspended trace        |
+| `GET`  | `/metrics`                 | Prometheus-compatible metrics |
 
 ## YAML Flow Syntax
 
@@ -117,14 +118,14 @@ nodes:
 
 ### Common Expressions
 
-| Expression | Meaning |
-|-----------|---------|
-| `0 12 * * *` | Every day at noon |
-| `0 0 * * *` | Every day at midnight |
-| `0 9 * * 1` | Every Monday at 9 AM |
-| `0 0 1 * *` | First day of each month |
-| `*/15 * * * *` | Every 15 minutes |
-| `0 0 * * 0` | Every Sunday at midnight |
+| Expression     | Meaning                  |
+| -------------- | ------------------------ |
+| `0 12 * * *`   | Every day at noon        |
+| `0 0 * * *`    | Every day at midnight    |
+| `0 9 * * 1`    | Every Monday at 9 AM     |
+| `0 0 1 * *`    | First day of each month  |
+| `*/15 * * * *` | Every 15 minutes         |
+| `0 0 * * 0`    | Every Sunday at midnight |
 
 ## Rust Code Patterns
 

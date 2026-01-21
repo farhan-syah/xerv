@@ -16,13 +16,15 @@ Start here if you're new to XERV:
 
 - **[Architecture Deep Dive](architecture.md)** - System design, data plane, execution plane, linker (40 min read)
   - Memory-mapped arena with rkyv serialization
-  - Topological scheduler with DAG execution
+  - Concurrent DAG execution with work-stealing scheduler
+  - Semaphore-based backpressure control (max_concurrent_nodes)
+  - Topological ordering and dynamic ready-node detection
   - Selector resolution system
   - Write-ahead log (WAL) for crash recovery
   - Circuit breaker for error rate management
   - Distributed clustering with OpenRaft (Raft consensus)
   - Resource cleanup and graceful shutdown
-  - Sequence diagrams for trace execution
+  - Sequence diagrams for concurrent trace execution
 
 ### Node Development
 
