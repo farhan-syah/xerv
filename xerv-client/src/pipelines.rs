@@ -2,7 +2,7 @@
 
 use crate::client::Client;
 use crate::error::Result;
-use crate::types::{PipelineInfo, PipelineStatus};
+use crate::types::{PipelineInfo, PipelineStatus, ValidationReport};
 use serde::Deserialize;
 
 /// Response from deploying a pipeline.
@@ -81,6 +81,42 @@ impl Client {
             trigger_count: 0,
             node_count: 0,
         })
+    }
+
+    /// Validate a pipeline definition without deploying.
+    ///
+    /// # Arguments
+    ///
+    /// * `yaml` - YAML pipeline definition
+    pub async fn validate_pipeline(&self, yaml: &str) -> Result<ValidationReport> {
+        let response = self
+            .post_raw(
+                "pipelines/validate",
+                yaml.as_bytes().to_vec(),
+                "application/x-yaml",
+            )
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    /// Validate a pipeline definition for deployment.
+    ///
+    /// # Arguments
+    ///
+    /// * `pipeline_id` - Pipeline identifier
+    /// * `yaml` - YAML pipeline definition
+    pub async fn validate_pipeline_for_deploy(
+        &self,
+        pipeline_id: &str,
+        yaml: &str,
+    ) -> Result<ValidationReport> {
+        let path = format!("pipelines/{}/deploy/validate", pipeline_id);
+        let response = self
+            .post_raw(&path, yaml.as_bytes().to_vec(), "application/x-yaml")
+            .await?;
+
+        self.handle_response(response).await
     }
 
     /// List all deployed pipelines.

@@ -33,6 +33,71 @@ async fn test_deploy_pipeline_success() {
 }
 
 #[tokio::test]
+async fn test_validate_pipeline() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/v1/pipelines/validate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "valid": true,
+            "errors": [],
+            "warnings": [
+                {
+                    "kind": "ORPHANED_NODE",
+                    "message": "Node 'orphan' has no connections",
+                    "location": "nodes.orphan"
+                }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let client = Client::new(mock_server.uri()).unwrap();
+    let yaml = "name: test\nversion: 1.0.0";
+
+    let result = client.validate_pipeline(yaml).await;
+    assert!(result.is_ok());
+
+    let report = result.unwrap();
+    assert!(report.valid);
+    assert_eq!(report.errors.len(), 0);
+    assert_eq!(report.warnings.len(), 1);
+}
+
+#[tokio::test]
+async fn test_validate_pipeline_for_deploy() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/v1/pipelines/test-pipeline/deploy/validate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "valid": false,
+            "errors": [
+                {
+                    "kind": "UNREACHABLE_NODES",
+                    "message": "Nodes unreachable from trigger: [\"node_x\"]",
+                    "nodes": ["node_x"]
+                }
+            ],
+            "warnings": []
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let client = Client::new(mock_server.uri()).unwrap();
+    let yaml = "name: test\nversion: 1.0.0";
+
+    let result = client
+        .validate_pipeline_for_deploy("test-pipeline", yaml)
+        .await;
+    assert!(result.is_ok());
+
+    let report = result.unwrap();
+    assert!(!report.valid);
+    assert_eq!(report.errors.len(), 1);
+}
+
+#[tokio::test]
 async fn test_deploy_pipeline_server_error() {
     let mock_server = MockServer::start().await;
 

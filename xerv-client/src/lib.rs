@@ -85,5 +85,5 @@ pub use error::{ClientError, Result};
 pub use logs::LogStats;
 pub use types::{
     HealthStatus, LogEntry, NodeId, PipelineInfo, PipelineStatus, TraceDetail, TraceId, TraceInfo,
-    TraceStatus, TriggerInfo, TriggerResponse,
+    TraceStatus, TriggerInfo, TriggerResponse, ValidationIssue, ValidationReport,
 };

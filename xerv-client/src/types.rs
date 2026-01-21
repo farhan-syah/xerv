@@ -145,3 +145,31 @@ pub struct LogEntry {
     #[serde(default)]
     pub fields: serde_json::Map<String, serde_json::Value>,
 }
+
+/// Validation issue returned by pipeline validation endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationIssue {
+    /// Machine-readable issue kind.
+    pub kind: String,
+    /// Human-readable issue message.
+    pub message: String,
+    /// Optional location path in the flow definition.
+    #[serde(default)]
+    pub location: Option<String>,
+    /// Optional list of node IDs associated with the issue.
+    #[serde(default)]
+    pub nodes: Option<Vec<String>>,
+}
+
+/// Validation report returned by pipeline validation endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationReport {
+    /// Whether the flow is valid for the requested action.
+    pub valid: bool,
+    /// Blocking errors.
+    #[serde(default)]
+    pub errors: Vec<ValidationIssue>,
+    /// Non-blocking warnings.
+    #[serde(default)]
+    pub warnings: Vec<ValidationIssue>,
+}
