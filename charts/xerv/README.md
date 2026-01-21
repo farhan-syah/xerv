@@ -96,6 +96,20 @@ helm install xerv xerv/xerv \
 | `ingress.hosts`     | Ingress hosts     | `[]`    |
 | `ingress.tls`       | TLS configuration | `[]`    |
 
+### Service Mesh
+
+| Parameter                              | Description                    | Default        |
+| -------------------------------------- | ------------------------------ | -------------- |
+| `serviceMesh.enabled`                  | Enable service mesh            | `false`        |
+| `serviceMesh.provider`                 | Provider: `istio` or `linkerd` | `""`           |
+| `serviceMesh.istio.injection.enabled`  | Enable Istio sidecar injection | `true`         |
+| `serviceMesh.istio.destinationRule.*`  | DestinationRule config         | See values     |
+| `serviceMesh.istio.virtualService.*`   | VirtualService config          | See values     |
+| `serviceMesh.istio.peerAuthentication.*` | mTLS configuration           | See values     |
+| `serviceMesh.linkerd.injection.enabled`| Enable Linkerd injection       | `true`         |
+| `serviceMesh.linkerd.serviceProfile.*` | ServiceProfile config          | See values     |
+| `serviceMesh.linkerd.trafficSplit.*`   | TrafficSplit for canary        | See values     |
+
 ## Examples
 
 ### Production Raft Cluster
@@ -156,6 +170,171 @@ resources:
     cpu: 1000m
     memory: 2Gi
 ```
+
+### Istio Service Mesh
+
+```yaml
+# values-istio.yaml
+serviceMesh:
+  enabled: true
+  provider: istio
+  istio:
+    injection:
+      enabled: true
+    destinationRule:
+      enabled: true
+      trafficPolicy:
+        connectionPool:
+          http:
+            h2UpgradePolicy: UPGRADE
+            http2MaxRequests: 1000
+        loadBalancer:
+          simple: ROUND_ROBIN
+          localityLbSetting:
+            enabled: true
+        outlierDetection:
+          consecutive5xxErrors: 5
+          interval: 30s
+          baseEjectionTime: 30s
+      tlsMode: ISTIO_MUTUAL
+    virtualService:
+      enabled: true
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 10s
+    peerAuthentication:
+      enabled: true
+      mtls: STRICT
+```
+
+### Linkerd Service Mesh
+
+```yaml
+# values-linkerd.yaml
+serviceMesh:
+  enabled: true
+  provider: linkerd
+  linkerd:
+    injection:
+      enabled: true
+    serviceProfile:
+      enabled: true
+      retryBudget:
+        retryRatio: 0.2
+        minRetriesPerSecond: 10
+        ttl: 10s
+    # Enable for canary deployments
+    trafficSplit:
+      enabled: false
+```
+
+## Service Mesh Integration
+
+### Istio Setup
+
+1. **Prerequisites**: Install Istio with `istioctl install --set profile=default`
+
+2. **Enable namespace injection** (optional, chart handles pod annotations):
+   ```bash
+   kubectl label namespace xerv istio-injection=enabled
+   ```
+
+3. **Install XERV with Istio**:
+   ```bash
+   helm install xerv xerv/xerv -f values-istio.yaml
+   ```
+
+4. **Verify sidecar injection**:
+   ```bash
+   kubectl get pods -n xerv -o jsonpath='{.items[*].spec.containers[*].name}'
+   # Should show: xerv istio-proxy
+   ```
+
+### Linkerd Setup
+
+1. **Prerequisites**: Install Linkerd with `linkerd install | kubectl apply -f -`
+
+2. **Install XERV with Linkerd**:
+   ```bash
+   helm install xerv xerv/xerv -f values-linkerd.yaml
+   ```
+
+3. **Verify proxy injection**:
+   ```bash
+   kubectl get pods -n xerv -o jsonpath='{.items[*].spec.containers[*].name}'
+   # Should show: xerv linkerd-proxy
+   ```
+
+### Multi-Cluster Mesh Setup
+
+For multi-region federation with service mesh, you need to configure cross-cluster communication.
+
+#### Istio Multi-Cluster
+
+1. **Configure trust** between clusters (shared root CA or external CA):
+   ```bash
+   # On each cluster
+   istioctl install --set values.global.meshID=mesh1 \
+     --set values.global.multiCluster.clusterName=cluster1 \
+     --set values.global.network=network1
+   ```
+
+2. **Enable cross-cluster service discovery**:
+   ```bash
+   # Create remote secret for each cluster
+   istioctl create-remote-secret --name=cluster2 | \
+     kubectl apply -f - --context=cluster1
+   ```
+
+3. **Deploy XERV on each cluster** with federation CRDs:
+   ```yaml
+   # Create XervFederation resource (see xerv-operator docs)
+   apiVersion: xerv.io/v1
+   kind: XervFederation
+   metadata:
+     name: global
+   spec:
+     clusters:
+       - name: us-east
+         endpoint: https://xerv.us-east.example.com
+       - name: eu-west
+         endpoint: https://xerv.eu-west.example.com
+     routing:
+       defaultStrategy: nearest
+     security:
+       mtlsEnabled: true
+   ```
+
+#### Linkerd Multi-Cluster
+
+1. **Install multi-cluster extension**:
+   ```bash
+   linkerd multicluster install | kubectl apply -f -
+   ```
+
+2. **Link clusters**:
+   ```bash
+   # On target cluster, get credentials
+   linkerd multicluster link --cluster-name=cluster2 | \
+     kubectl apply -f - --context=cluster1
+   ```
+
+3. **Export XERV service**:
+   ```bash
+   kubectl label svc xerv mirror.linkerd.io/exported=true
+   ```
+
+4. **Deploy XERV with federation** using the same XervFederation CRD.
+
+### gRPC with Service Mesh
+
+When using Raft backend with service mesh, gRPC traffic between peers is automatically configured:
+
+- **Istio**: Uses `ISTIO_MUTUAL` TLS by default
+- **Linkerd**: Automatically handles HTTP/2 (gRPC) traffic
+
+For optimal performance, the chart creates separate DestinationRule/ServiceProfile for the headless service used by Raft peer communication.
 
 ## Upgrading
 

@@ -1,0 +1,19 @@
+{{- if and .Values.serviceMesh.enabled (eq .Values.serviceMesh.provider "linkerd") .Values.serviceMesh.linkerd.trafficSplit.enabled }}
+apiVersion: split.smi-spec.io/v1alpha2
+kind: TrafficSplit
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  # The root service that receives traffic
+  service: {{ include "xerv.fullname" . }}
+  backends:
+    # Stable version (primary)
+    - service: {{ include "xerv.fullname" . }}
+      weight: {{ .Values.serviceMesh.linkerd.trafficSplit.canary.stableWeight }}
+    # Canary version
+    - service: {{ include "xerv.fullname" . }}{{ .Values.serviceMesh.linkerd.trafficSplit.canary.canarySuffix }}
+      weight: {{ .Values.serviceMesh.linkerd.trafficSplit.canary.canaryWeight }}
+{{- end }}

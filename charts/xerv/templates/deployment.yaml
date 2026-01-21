@@ -20,8 +20,14 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with (include "xerv.serviceMeshAnnotations" .) }}
+        {{- . | nindent 8 }}
+        {{- end }}
       labels:
         {{- include "xerv.labels" . | nindent 8 }}
+        {{- with (include "xerv.serviceMeshLabels" .) }}
+        {{- . | nindent 8 }}
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

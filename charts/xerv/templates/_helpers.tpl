@@ -84,3 +84,43 @@ Headless service name (for Raft peer discovery)
 {{- define "xerv.headlessServiceName" -}}
 {{- printf "%s-headless" (include "xerv.fullname" .) }}
 {{- end }}
+
+{{/*
+Service mesh pod annotations
+Returns the appropriate annotations for Istio or Linkerd based on configuration
+*/}}
+{{- define "xerv.serviceMeshAnnotations" -}}
+{{- if .Values.serviceMesh.enabled }}
+{{- if eq .Values.serviceMesh.provider "istio" }}
+{{- if .Values.serviceMesh.istio.injection.enabled }}
+sidecar.istio.io/inject: "true"
+{{- end }}
+{{- else if eq .Values.serviceMesh.provider "linkerd" }}
+{{- if .Values.serviceMesh.linkerd.injection.enabled }}
+linkerd.io/inject: enabled
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Service mesh pod labels
+Returns additional labels for service mesh integration
+*/}}
+{{- define "xerv.serviceMeshLabels" -}}
+{{- if .Values.serviceMesh.enabled }}
+{{- if eq .Values.serviceMesh.provider "istio" }}
+app: {{ include "xerv.name" . }}
+version: {{ .Chart.AppVersion | default "v1" | quote }}
+{{- else if eq .Values.serviceMesh.provider "linkerd" }}
+app: {{ include "xerv.name" . }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+gRPC service name (for service mesh routing)
+*/}}
+{{- define "xerv.grpcServiceName" -}}
+{{- printf "%s-grpc" (include "xerv.fullname" .) }}
+{{- end }}

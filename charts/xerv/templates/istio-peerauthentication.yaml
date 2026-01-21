@@ -1,0 +1,41 @@
+{{- if and .Values.serviceMesh.enabled (eq .Values.serviceMesh.provider "istio") .Values.serviceMesh.istio.peerAuthentication.enabled }}
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "xerv.selectorLabels" . | nindent 6 }}
+  mtls:
+    mode: {{ .Values.serviceMesh.istio.peerAuthentication.mtls }}
+  {{- if eq .Values.dispatch.backend "raft" }}
+  # Allow permissive mode for gRPC port during Raft cluster formation
+  # This can be changed to STRICT once the cluster is stable
+  portLevelMtls:
+    {{ .Values.server.grpcPort }}:
+      mode: {{ .Values.serviceMesh.istio.peerAuthentication.mtls }}
+  {{- end }}
+---
+{{- if .Values.serviceMesh.istio.authorizationPolicy.enabled }}
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "xerv.selectorLabels" . | nindent 6 }}
+  action: ALLOW
+  {{- with .Values.serviceMesh.istio.authorizationPolicy.rules }}
+  rules:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

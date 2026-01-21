@@ -1,0 +1,74 @@
+{{- if and .Values.serviceMesh.enabled (eq .Values.serviceMesh.provider "linkerd") .Values.serviceMesh.linkerd.serviceProfile.enabled }}
+apiVersion: linkerd.io/v1alpha2
+kind: ServiceProfile
+metadata:
+  name: {{ include "xerv.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.serviceMesh.linkerd.serviceProfile.retryBudget }}
+  retryBudget:
+    retryRatio: {{ .retryRatio }}
+    minRetriesPerSecond: {{ .minRetriesPerSecond }}
+    ttl: {{ .ttl }}
+  {{- end }}
+  routes:
+    {{- range .Values.serviceMesh.linkerd.serviceProfile.routes }}
+    - name: {{ .name }}
+      condition:
+        method: {{ .condition.method | quote }}
+        pathRegex: {{ .condition.pathRegex | quote }}
+      {{- if hasKey . "isRetryable" }}
+      isRetryable: {{ .isRetryable }}
+      {{- end }}
+      {{- if .timeout }}
+      timeout: {{ .timeout }}
+      {{- end }}
+    {{- end }}
+{{- if eq .Values.dispatch.backend "raft" }}
+---
+# ServiceProfile for gRPC (Raft peer communication)
+apiVersion: linkerd.io/v1alpha2
+kind: ServiceProfile
+metadata:
+  name: {{ include "xerv.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  retryBudget:
+    retryRatio: 0.1
+    minRetriesPerSecond: 5
+    ttl: 10s
+  routes:
+    # Raft AppendEntries - should not be retried (idempotent but timing-sensitive)
+    - name: raft-append
+      condition:
+        method: POST
+        pathRegex: "/raft\\.v1\\.RaftService/AppendEntries"
+      isRetryable: false
+      timeout: 5s
+    # Raft RequestVote - should not be retried
+    - name: raft-vote
+      condition:
+        method: POST
+        pathRegex: "/raft\\.v1\\.RaftService/RequestVote"
+      isRetryable: false
+      timeout: 2s
+    # Raft InstallSnapshot - long timeout, no retry
+    - name: raft-snapshot
+      condition:
+        method: POST
+        pathRegex: "/raft\\.v1\\.RaftService/InstallSnapshot"
+      isRetryable: false
+      timeout: 60s
+    # Default gRPC route
+    - name: grpc-default
+      condition:
+        method: POST
+        pathRegex: ".*"
+      isRetryable: true
+      timeout: 30s
+{{- end }}
+{{- end }}

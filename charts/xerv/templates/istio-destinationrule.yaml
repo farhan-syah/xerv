@@ -1,0 +1,66 @@
+{{- if and .Values.serviceMesh.enabled (eq .Values.serviceMesh.provider "istio") .Values.serviceMesh.istio.destinationRule.enabled }}
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  host: {{ include "xerv.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    {{- with .Values.serviceMesh.istio.destinationRule.trafficPolicy.connectionPool }}
+    connectionPool:
+      {{- with .http }}
+      http:
+        h2UpgradePolicy: {{ .h2UpgradePolicy }}
+        http1MaxPendingRequests: {{ .http1MaxPendingRequests }}
+        http2MaxRequests: {{ .http2MaxRequests }}
+      {{- end }}
+      {{- with .tcp }}
+      tcp:
+        maxConnections: {{ .maxConnections }}
+      {{- end }}
+    {{- end }}
+    {{- with .Values.serviceMesh.istio.destinationRule.trafficPolicy.loadBalancer }}
+    loadBalancer:
+      simple: {{ .simple }}
+      {{- with .localityLbSetting }}
+      {{- if .enabled }}
+      localityLbSetting:
+        enabled: true
+      {{- end }}
+      {{- end }}
+    {{- end }}
+    {{- with .Values.serviceMesh.istio.destinationRule.trafficPolicy.outlierDetection }}
+    outlierDetection:
+      consecutive5xxErrors: {{ .consecutive5xxErrors }}
+      interval: {{ .interval }}
+      baseEjectionTime: {{ .baseEjectionTime }}
+      maxEjectionPercent: {{ .maxEjectionPercent }}
+    {{- end }}
+    tls:
+      mode: {{ .Values.serviceMesh.istio.destinationRule.tlsMode }}
+---
+{{- if eq .Values.dispatch.backend "raft" }}
+# Separate DestinationRule for gRPC (Raft peer communication)
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ include "xerv.grpcServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  host: {{ include "xerv.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      http:
+        h2UpgradePolicy: UPGRADE
+        http2MaxRequests: 1000
+    loadBalancer:
+      simple: ROUND_ROBIN
+    tls:
+      mode: {{ .Values.serviceMesh.istio.destinationRule.tlsMode }}
+{{- end }}
+{{- end }}

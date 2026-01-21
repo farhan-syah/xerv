@@ -1,0 +1,66 @@
+{{- if and .Values.serviceMesh.enabled (eq .Values.serviceMesh.provider "istio") .Values.serviceMesh.istio.virtualService.enabled }}
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+spec:
+  hosts:
+    {{- if .Values.serviceMesh.istio.virtualService.hosts }}
+    {{- toYaml .Values.serviceMesh.istio.virtualService.hosts | nindent 4 }}
+    {{- else }}
+    - {{ include "xerv.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    {{- end }}
+  {{- with .Values.serviceMesh.istio.virtualService.gateways }}
+  gateways:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  http:
+    # Health endpoint - no retries, short timeout
+    - match:
+        - uri:
+            prefix: /health
+      route:
+        - destination:
+            host: {{ include "xerv.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: {{ .Values.server.apiPort }}
+      timeout: 5s
+    # Metrics endpoint - no retries
+    - match:
+        - uri:
+            prefix: /metrics
+      route:
+        - destination:
+            host: {{ include "xerv.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: {{ .Values.metrics.port }}
+      timeout: 10s
+    # API routes with retries
+    - match:
+        - uri:
+            prefix: /api/
+      route:
+        - destination:
+            host: {{ include "xerv.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: {{ .Values.server.apiPort }}
+      timeout: {{ .Values.serviceMesh.istio.virtualService.timeout }}
+      retries:
+        attempts: {{ .Values.serviceMesh.istio.virtualService.retries.attempts }}
+        perTryTimeout: {{ .Values.serviceMesh.istio.virtualService.retries.perTryTimeout }}
+        retryOn: {{ .Values.serviceMesh.istio.virtualService.retries.retryOn | quote }}
+    # Default route
+    - route:
+        - destination:
+            host: {{ include "xerv.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: {{ .Values.server.apiPort }}
+      timeout: {{ .Values.serviceMesh.istio.virtualService.timeout }}
+      retries:
+        attempts: {{ .Values.serviceMesh.istio.virtualService.retries.attempts }}
+        perTryTimeout: {{ .Values.serviceMesh.istio.virtualService.retries.perTryTimeout }}
+        retryOn: {{ .Values.serviceMesh.istio.virtualService.retries.retryOn | quote }}
+{{- end }}

@@ -232,3 +232,124 @@ networkPolicy:
   enabled: false
   ingress: []
   egress: []
+
+# Service Mesh Integration
+# Supports both Istio and Linkerd for advanced networking
+serviceMesh:
+  # Enable service mesh integration
+  enabled: false
+  # Provider: "istio" or "linkerd"
+  provider: ""
+
+  # Istio-specific configuration
+  istio:
+    # Enable Istio sidecar injection
+    injection:
+      enabled: true
+    # DestinationRule configuration
+    destinationRule:
+      enabled: true
+      # Traffic policy for load balancing
+      trafficPolicy:
+        connectionPool:
+          http:
+            # Upgrade HTTP/1.1 to HTTP/2
+            h2UpgradePolicy: UPGRADE
+            # Max requests per connection
+            http1MaxPendingRequests: 100
+            # Max concurrent HTTP/2 streams
+            http2MaxRequests: 1000
+          tcp:
+            maxConnections: 100
+        loadBalancer:
+          simple: ROUND_ROBIN
+          # Enable locality-aware load balancing
+          localityLbSetting:
+            enabled: true
+        # Outlier detection for circuit breaking
+        outlierDetection:
+          consecutive5xxErrors: 5
+          interval: 30s
+          baseEjectionTime: 30s
+          maxEjectionPercent: 50
+      # TLS mode: DISABLE, SIMPLE, MUTUAL, ISTIO_MUTUAL
+      tlsMode: ISTIO_MUTUAL
+    # VirtualService configuration
+    virtualService:
+      enabled: true
+      # Hosts to match (leave empty to use service name)
+      hosts: []
+      # Gateway to attach (optional, for external traffic)
+      gateways: []
+      # Timeout for requests
+      timeout: 30s
+      # Retry policy
+      retries:
+        attempts: 3
+        perTryTimeout: 10s
+        retryOn: "connect-failure,refused-stream,unavailable,cancelled,retriable-4xx,5xx"
+    # PeerAuthentication for mTLS
+    peerAuthentication:
+      enabled: true
+      # mTLS mode: DISABLE, PERMISSIVE, STRICT
+      mtls: STRICT
+    # AuthorizationPolicy (optional)
+    authorizationPolicy:
+      enabled: false
+      # Rules to apply (empty means deny all if enabled)
+      rules: []
+
+  # Linkerd-specific configuration
+  linkerd:
+    # Enable Linkerd proxy injection
+    injection:
+      enabled: true
+    # ServiceProfile for retries and timeouts
+    serviceProfile:
+      enabled: true
+      # Route configurations
+      routes:
+        # Health endpoint - no retries
+        - name: health
+          condition:
+            method: GET
+            pathRegex: "/health"
+          isRetryable: false
+          timeout: 5s
+        # Metrics endpoint - no retries
+        - name: metrics
+          condition:
+            method: GET
+            pathRegex: "/metrics"
+          isRetryable: false
+          timeout: 10s
+        # API routes - retryable
+        - name: api
+          condition:
+            method: "*"
+            pathRegex: "/api/.*"
+          isRetryable: true
+          timeout: 30s
+        # Default route
+        - name: default
+          condition:
+            method: "*"
+            pathRegex: ".*"
+          isRetryable: true
+          timeout: 30s
+      # Default retry budget (percentage of requests that can be retried)
+      retryBudget:
+        retryRatio: 0.2
+        minRetriesPerSecond: 10
+        ttl: 10s
+    # TrafficSplit for canary deployments
+    trafficSplit:
+      enabled: false
+      # Canary configuration (only applies when enabled)
+      canary:
+        # Weight for stable version (0-1000, 1000 = 100%)
+        stableWeight: 900
+        # Weight for canary version (0-1000)
+        canaryWeight: 100
+        # Canary service name suffix
+        canarySuffix: "-canary"
