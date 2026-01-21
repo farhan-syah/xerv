@@ -399,7 +399,8 @@ mod tests {
             grpc_port: 5000,
         };
 
-        let json = serde_json::to_string(&spec).unwrap();
+        let json =
+            serde_json::to_string(&spec).expect("Failed to serialize XervClusterSpec to JSON");
         assert!(json.contains("redis"));
         assert!(json.contains("redis://redis:6379"));
     }

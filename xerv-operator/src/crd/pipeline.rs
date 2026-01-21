@@ -403,7 +403,8 @@ mod tests {
             secrets: vec![],
         };
 
-        let json = serde_json::to_string(&spec).unwrap();
+        let json = serde_json::to_string(&spec)
+            .expect("Failed to serialize XervPipelineSpec with git source to JSON");
         assert!(json.contains("github.com"));
     }
 
@@ -431,11 +432,13 @@ mod tests {
             secrets: vec![],
         };
 
-        let json = serde_json::to_string(&spec).unwrap();
+        let json =
+            serde_json::to_string(&spec).expect("Failed to serialize XervPipelineSpec to JSON");
         assert!(json.contains("cron"));
         assert!(json.contains("0 * * * *"));
 
-        let parsed: XervPipelineSpec = serde_json::from_str(&json).unwrap();
+        let parsed: XervPipelineSpec =
+            serde_json::from_str(&json).expect("Failed to parse XervPipelineSpec from JSON");
         assert_eq!(parsed.triggers[0].trigger_type, TriggerType::Cron);
     }
 }

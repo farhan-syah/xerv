@@ -51,6 +51,14 @@ pub enum OperatorError {
     /// Serialization error.
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    /// Health check error.
+    #[error("Health check failed: {0}")]
+    HealthCheck(String),
+
+    /// Deployment error.
+    #[error("Deployment failed: {0}")]
+    DeploymentError(String),
 }
 
 /// Result type for operator operations.
