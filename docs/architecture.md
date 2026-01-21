@@ -238,111 +238,159 @@ graph LR
     PR --> M
 ```
 
-### Topological Sorting
+### DAG Validation and Topological Sorting
 
-The Executor validates the DAG and produces an execution order:
+The Executor validates the DAG structure and stores a flattened topological order:
 
 ```rust
 pub struct Executor {
-    graph: FlowGraph,
-    execution_order: Vec<Vec<NodeId>>,  // Levels of parallel execution
-    state: TraceState,
+    graph: Arc<FlowGraph>,
+    execution_order: Vec<NodeId>,  // Flat topological order (not levels!)
+    nodes: HashMap<NodeId, Arc<Box<dyn Node>>>,
 }
 
 impl Executor {
-    pub fn new(graph: FlowGraph) -> Result<Self> {
-        // 1. Detect cycles
-        let cycles = graph.find_cycles()?;
-        if !cycles.is_empty() {
-            return Err(XervError::CyclicGraph { cycles });
-        }
+    pub fn new(
+        graph: FlowGraph,
+        nodes: HashMap<NodeId, Box<dyn Node>>
+    ) -> Result<Self> {
+        // 1. Validate DAG (cycle detection via graph validation)
+        graph.validate()?;
 
-        // 2. Topological sort (Kahn's algorithm)
+        // 2. Topological sort (Kahn's algorithm) - returns flat order
         let execution_order = graph.topological_sort()?;
 
+        // 3. Wrap nodes in Arc for concurrent task access
+        let nodes: HashMap<NodeId, Arc<Box<dyn Node>>> = nodes
+            .into_iter()
+            .map(|(id, node)| (id, Arc::new(node)))
+            .collect();
+
         Ok(Self {
-            graph,
+            graph: Arc::new(graph),
             execution_order,
-            state: TraceState::new(),
+            nodes,
         })
     }
 }
 ```
 
-For the order flow, execution_order becomes:
+**Important:** The topological sort produces a valid execution order but does NOT enforce strict levels. Instead, the work-stealing scheduler at runtime dynamically finds ready nodes (all dependencies satisfied) and executes them concurrently.
 
-```mermaid
-graph TD
-    L0["<b>Level 0:</b> [1]<br/>(fraud_check first)"]
-    L1["<b>Level 1:</b> [2, 3]<br/>(process_safe AND process_risky<br/>in parallel)"]
-    L2["<b>Level 2:</b> [4]<br/>(merge waits for both)"]
+For the order processing example:
 
-    L0 --> L1
-    L1 --> L2
+```
+Flat topological order: [fraud_check, process_safe, process_risky, merge]
 
-    style L0 fill:#e1f5fe
-    style L1 fill:#f3e5f5
-    style L2 fill:#e8f5e9
+Runtime execution (work-stealing):
+┌─────────────────────────────────────────┐
+│ Step 1: Find ready nodes = [fraud_check]│
+│         Execute: fraud_check             │
+├─────────────────────────────────────────┤
+│ Step 2: fraud_check completes           │
+│         Find ready = [process_safe,     │
+│                       process_risky]    │
+│         Execute both in parallel         │
+├─────────────────────────────────────────┤
+│ Step 3: Both complete                    │
+│         Find ready = [merge]            │
+│         Execute: merge                   │
+├─────────────────────────────────────────┤
+│ Step 4: All nodes done → trace complete │
+└─────────────────────────────────────────┘
 ```
 
-### Concurrent Execution
+This approach automatically extracts maximum parallelism from any DAG without requiring explicit level definition.
 
-The Executor uses **signals** to coordinate async execution:
+### Concurrent Execution with Work-Stealing
+
+The Executor uses a **work-stealing approach** for maximum concurrency while respecting DAG dependencies:
 
 ```rust
-pub struct ExecutionSignal {
-    node_id: NodeId,
-    state: ExecutionState,  // Running, Completed, Failed
-}
-
-pub struct Executor {
-    signals: DashMap<NodeId, ExecutionSignal>,
-    trace_state: TraceState,
+pub struct ExecutorConfig {
+    /// Maximum concurrent node executions per trace
+    pub max_concurrent_nodes: usize,
 }
 
 impl Executor {
-    pub async fn run(&self, trace: Trace) -> Result<TraceResult> {
-        // Execute each level sequentially, but nodes within level concurrently
-        for level in &self.execution_order {
-            // Wait for all nodes in previous level
-            self.wait_level_complete(level - 1).await?;
+    pub async fn execute_trace(&self, trace_id: TraceId) -> Result<()> {
+        // Semaphore limits concurrent node executions
+        let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_nodes));
 
-            // Launch all nodes in this level as concurrent tasks
-            let mut handles = vec![];
-            for node_id in level {
-                let handle = tokio::spawn(self.execute_node(*node_id, trace));
-                handles.push(handle);
+        // JoinSet to track spawned tasks
+        let mut tasks: JoinSet<NodeExecutionResult> = JoinSet::new();
+
+        // Track spawned nodes to prevent double-spawning
+        let mut spawned: HashSet<NodeId> = HashSet::new();
+
+        loop {
+            // Find all ready nodes (dependencies satisfied, not yet executing)
+            let ready_nodes = self.find_ready_nodes(trace_id, &spawned)?;
+
+            // Spawn tasks for ready nodes
+            for node_id in ready_nodes {
+                spawned.insert(node_id);
+
+                // Prepare execution context
+                let exec_ctx = self.prepare_node_execution(trace_id, node_id)?;
+                let node = Arc::clone(self.nodes.get(&node_id)?);
+
+                // Mark node as executing
+                if let Some(mut trace) = self.traces.get_mut(&trace_id) {
+                    trace.mark_executing(node_id);
+                }
+
+                // Spawn task with semaphore-based backpressure
+                let semaphore = Arc::clone(&semaphore);
+                tasks.spawn(async move {
+                    // Acquire permit (blocks if at max_concurrent_nodes)
+                    let _permit = semaphore.acquire().await?;
+
+                    // Execute the node
+                    let result = node.execute(exec_ctx).await;
+
+                    NodeExecutionResult { node_id, result }
+                });
             }
 
-            // Wait for all tasks to complete
-            for handle in handles {
-                handle.await???;
+            // If no tasks running and no ready nodes, we're done
+            if tasks.is_empty() {
+                break;
+            }
+
+            // Wait for any task to complete
+            if let Some(join_result) = tasks.join_next().await {
+                let execution_result = join_result?;
+
+                // Process result and update trace state
+                self.process_node_result(trace_id, execution_result).await?;
             }
         }
-
-        Ok(trace.finalize()?)
-    }
-
-    async fn execute_node(&self, node_id: NodeId, trace: &Trace) -> Result<()> {
-        // 1. Read input data from arena via RelPtr
-        let input = trace.arena.read(trace.input_ptr)?;
-
-        // 2. Execute node logic
-        let output = node.execute(input, trace.context).await?;
-
-        // 3. Write output to arena
-        let output_ptr = trace.arena.write(&output)?;
-
-        // 4. Signal completion
-        self.signals.insert(node_id, ExecutionSignal {
-            state: ExecutionState::Completed,
-            output_ptr,
-        });
 
         Ok(())
     }
 }
 ```
+
+**Key Features:**
+
+- **Work-stealing scheduler** - Finds all "ready" nodes (dependencies met) and spawns tasks up to `max_concurrent_nodes`
+- **Semaphore-based backpressure** - Limits concurrent node executions to prevent resource exhaustion
+- **Dynamic task spawning** - No pre-defined levels; nodes execute as soon as dependencies are satisfied
+- **Arc-wrapped nodes** - All nodes wrapped in `Arc<Box<dyn Node>>` for safe concurrent access across async tasks
+- **JoinSet management** - Uses `tokio::JoinSet` for efficient task lifecycle management
+
+**Concurrency Control:**
+
+```rust
+// Configure in ExecutorConfig or environment variable
+pub max_concurrent_nodes: usize,  // Default: 16
+
+// From environment:
+// XERV_MAX_CONCURRENT_NODES=32 ./xerv serve
+```
+
+This design maximizes parallelism by allowing nodes from different levels of the DAG to execute concurrently, as long as their individual dependencies are satisfied.
 
 ## Linker: Selector Resolution
 
@@ -613,10 +661,11 @@ sequenceDiagram
     participant Webhook as HTTP Request
     participant Arena as Arena Storage
     participant Executor as Executor/Scheduler
-    participant FC as fraud_check
-    participant PS as process_safe
-    participant PR as process_risky
-    participant Merge as merge
+    participant Sem as Semaphore<br/>(backpressure)
+    participant FC as fraud_check<br/>(task)
+    participant PS as process_safe<br/>(task)
+    participant PR as process_risky<br/>(task)
+    participant Merge as merge<br/>(task)
     participant WAL as Write-Ahead Log
     participant Pipeline as Pipeline
 
@@ -624,40 +673,93 @@ sequenceDiagram
     Webhook->>Pipeline: Create new trace
     Pipeline->>Executor: 2. Queue trace for execution
 
-    Executor->>Executor: 3. Topological sort:<br/>[FC] → [PS/PR] → [Merge]
+    Executor->>Executor: 3. Find ready nodes:<br/>[FC] (no dependencies)
 
-    par Execute Level 1 (Sequential)
-        Executor->>FC: Execute
+    par Spawn FC task (acquire semaphore permit)
+        Executor->>Sem: Acquire permit
+        Sem-->>Executor: Permit acquired
+        Executor->>+FC: Spawn async task
         FC->>Arena: Read input from arena
-        FC->>FC: Evaluate: 0.95 > 0.8? → true
-        FC->>Arena: Write output → entry 1
-        FC->>WAL: NodeCompleted(fraud_check)
     end
 
-    par Execute Level 2 (Parallel)
-        Executor->>PS: Execute PS path
-        PS->>Arena: Read FC output from arena
+    Note over FC,Merge: fraud_check executing...
+    FC->>FC: Evaluate: 0.95 > 0.8? → true
+    FC->>Arena: Write output → entry 1
+    FC->>WAL: NodeCompleted(fraud_check)
+
+    Executor->>Executor: 4. Find ready nodes:<br/>[PS, PR] (FC done)
+
+    par Spawn PS and PR tasks (acquire 2 permits)
+        Executor->>Sem: Acquire permit #1
+        Sem-->>Executor: Permit acquired
+        Executor->>Sem: Acquire permit #2
+        Sem-->>Executor: Permit acquired
+        Executor->>+PS: Spawn task (async)
+        Executor->>+PR: Spawn task (async)
+    end
+
+    par Execute PS and PR in parallel
+        PS->>Arena: Read FC output
         PS->>Arena: Write output → entry 2
         PS->>WAL: NodeCompleted(process_safe)
     and
-        Executor->>PR: Execute PR path
-        PR->>Arena: Read FC output from arena
+        PR->>Arena: Read FC output
         PR->>Arena: Write output → entry 3
         PR->>WAL: NodeCompleted(process_risky)
     end
 
-    par Execute Level 3 (Sequential)
-        Executor->>Merge: Execute merge barrier
-        Merge->>Arena: Read PS output from arena
-        Merge->>Arena: Read PR output from arena
-        Merge->>Arena: Write final output → entry 4
-        Merge->>WAL: NodeCompleted(merge)
-        WAL->>WAL: TraceCompleted
+    Executor->>Executor: 5. Find ready nodes:<br/>[Merge] (PS and PR done)
+
+    par Spawn Merge task (acquire 1 permit)
+        Executor->>Sem: Acquire permit #3
+        Sem-->>Executor: Permit acquired
+        Executor->>+Merge: Spawn async task
     end
 
-    Merge-->>Pipeline: Return trace result
+    Merge->>Arena: Read PS output
+    Merge->>Arena: Read PR output
+    Merge->>Arena: Write final output → entry 4
+    Merge->>WAL: NodeCompleted(merge)
+
+    Executor->>Executor: 6. No ready nodes<br/>All tasks done → exit
+
+    Merge-->>-Pipeline: Return trace result
     Pipeline-->>Webhook: HTTP 200 with trace ID
+
+    Note over Executor,Sem: Semaphore released as tasks complete
 ```
+
+**Execution Timeline (Concurrent):**
+
+```
+Time:     0ms      10ms     20ms      30ms     40ms     50ms     60ms
+          │        │        │         │        │        │        │
+
+fraud_check:
+          ├────────┤ (10ms, writes entry 1)
+
+process_safe:
+          │        ├────────────────┤ (20ms, waits for FC)
+
+process_risky:
+          │        ├────────────────┤ (20ms, parallel with PS)
+
+merge:
+          │        │                 ├────────┤ (10ms, waits for PS+PR)
+          │        │                 │        │
+          └────────────────────────────────────┘
+          Total execution: ~50ms (vs ~70ms if sequential)
+```
+
+**With Semaphore (max_concurrent_nodes = 2):**
+
+When `max_concurrent_nodes = 2`, only 2 nodes execute concurrently. The semaphore blocks task spawning until a permit is available.
+
+- Time 0-10ms: FC executes (1 permit held)
+- Time 10-30ms: PS and PR execute in parallel (2 permits held)
+- Time 30-40ms: Merge executes (1 permit held)
+
+This backpressure prevents resource exhaustion and allows fine-grained control over executor memory usage.
 
 ## Dispatch Backends and Scaling
 
