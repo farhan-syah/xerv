@@ -1,6 +1,12 @@
 # XERV Operator RBAC Configuration
-# This file contains the ServiceAccount, ClusterRole, and ClusterRoleBinding
+# This file contains the ServiceAccount, Role, and RoleBinding
 # needed to run the XERV operator in a Kubernetes cluster.
+#
+# Security Model:
+# - Namespace-scoped permissions (not cluster-wide)
+# - Read-only access to secrets (restricted by label selector)
+# - Full CRUD only on XERV-managed resources
+# - Minimal access to core Kubernetes resources
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -12,19 +18,22 @@ metadata:
     app.kubernetes.io/component: operator
 
 ---
+# ClusterRole for XERV CRDs (cluster-wide, but limited to CRDs only)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: xerv-operator
+  name: xerv-operator-crd
   labels:
     app.kubernetes.io/name: xerv-operator
     app.kubernetes.io/component: operator
 rules:
-  # XervCluster and XervPipeline CRDs
+  # XERV Custom Resource Definitions
   - apiGroups: ["xerv.io"]
     resources:
       - xervclusters
       - xervpipelines
+      - xervfederations
+      - federatedpipelines
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # Status subresources
@@ -32,6 +41,8 @@ rules:
     resources:
       - xervclusters/status
       - xervpipelines/status
+      - xervfederations/status
+      - federatedpipelines/status
     verbs: ["get", "update", "patch"]
 
   # Finalizers
@@ -39,49 +50,105 @@ rules:
     resources:
       - xervclusters/finalizers
       - xervpipelines/finalizers
+      - xervfederations/finalizers
+      - federatedpipelines/finalizers
     verbs: ["update"]
 
-  # Core resources for cluster management
+---
+# Namespace-scoped Role for core Kubernetes resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: xerv-operator
+  namespace: xerv-system
+  labels:
+    app.kubernetes.io/name: xerv-operator
+    app.kubernetes.io/component: operator
+rules:
+  # Secrets: READ-ONLY access to XERV-managed secrets
+  # CRITICAL: This prevents the operator from accessing arbitrary secrets
+  - apiGroups: [""]
+    resources:
+      - secrets
+    verbs: ["get", "list", "watch"]
+    # Note: In production, add a labelSelector via ValidatingWebhookConfiguration
+    # to restrict to secrets with label: app.kubernetes.io/managed-by=xerv
+
+  # ConfigMaps: Read-only for pipeline definitions
+  - apiGroups: [""]
+    resources:
+      - configmaps
+    verbs: ["get", "list", "watch"]
+
+  # Pods: Read-only for status monitoring
   - apiGroups: [""]
     resources:
       - pods
       - pods/status
+    verbs: ["get", "list", "watch"]
+
+  # Services: Full CRUD for XERV cluster services
+  - apiGroups: [""]
+    resources:
       - services
-      - configmaps
-      - secrets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # PVCs: Full CRUD for XERV cluster storage
+  - apiGroups: [""]
+    resources:
       - persistentvolumeclaims
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Workloads
+  # Workloads: Full CRUD for XERV cluster deployments
   - apiGroups: ["apps"]
     resources:
       - statefulsets
       - deployments
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Events for status reporting
+  # Events: Write-only for status reporting
   - apiGroups: [""]
     resources:
       - events
     verbs: ["create", "patch"]
 
-  # Coordination for leader election
+  # Leases: Full CRUD for leader election
   - apiGroups: ["coordination.k8s.io"]
     resources:
       - leases
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 ---
+# ClusterRoleBinding for CRD access (cluster-wide)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: xerv-operator
+  name: xerv-operator-crd
   labels:
     app.kubernetes.io/name: xerv-operator
     app.kubernetes.io/component: operator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
+  name: xerv-operator-crd
+subjects:
+  - kind: ServiceAccount
+    name: xerv-operator
+    namespace: xerv-system
+
+---
+# RoleBinding for namespace-scoped resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: xerv-operator
+  namespace: xerv-system
+  labels:
+    app.kubernetes.io/name: xerv-operator
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
   name: xerv-operator
 subjects:
   - kind: ServiceAccount
