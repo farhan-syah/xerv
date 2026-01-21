@@ -31,6 +31,7 @@ mod tests {
             nodes: HashMap::new(),
             edges: vec![],
             settings: Default::default(),
+            metadata: None,
         }
     }
 

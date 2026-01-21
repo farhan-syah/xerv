@@ -53,7 +53,10 @@ mod settings;
 mod trigger;
 mod validation;
 
-pub use definition::{FlowDefinition, FlowLoadError};
+pub use definition::{
+    CanvasState, FlowDefinition, FlowLoadError, FlowMetadata, NodePosition, NodeUiState,
+    UiMetadata, ViewportOffset,
+};
 pub use edge::EdgeDefinition;
 pub use node::NodeDefinition;
 pub use settings::FlowSettings;
