@@ -2,6 +2,7 @@
 //!
 //! Re-exports shared types from xerv-core and defines client-specific response types.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 // Re-export core types
@@ -71,10 +72,10 @@ pub struct TraceInfo {
     pub pipeline_id: String,
     /// Current trace status.
     pub status: TraceStatus,
-    /// ISO 8601 timestamp when trace started.
-    pub started_at: String,
-    /// ISO 8601 timestamp when trace completed (if finished).
-    pub completed_at: Option<String>,
+    /// Timestamp when trace started.
+    pub started_at: DateTime<Utc>,
+    /// Timestamp when trace completed (if finished).
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 /// Detailed trace information.
@@ -86,10 +87,10 @@ pub struct TraceDetail {
     pub pipeline_id: String,
     /// Current trace status.
     pub status: TraceStatus,
-    /// ISO 8601 timestamp when trace started.
-    pub started_at: String,
-    /// ISO 8601 timestamp when trace completed (if finished).
-    pub completed_at: Option<String>,
+    /// Timestamp when trace started.
+    pub started_at: DateTime<Utc>,
+    /// Timestamp when trace completed (if finished).
+    pub completed_at: Option<DateTime<Utc>>,
     /// Number of nodes executed.
     pub nodes_executed: usize,
     /// Error message if trace failed.
@@ -126,8 +127,8 @@ pub struct HealthStatus {
 pub struct LogEntry {
     /// Log entry ID.
     pub id: u64,
-    /// ISO 8601 timestamp.
-    pub timestamp: String,
+    /// Timestamp when log was recorded.
+    pub timestamp: DateTime<Utc>,
     /// Log level (trace, debug, info, warn, error).
     pub level: String,
     /// Log category.

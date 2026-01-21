@@ -3,6 +3,7 @@
 use crate::client::Client;
 use crate::error::Result;
 use crate::types::{TraceDetail, TraceId, TraceInfo, TraceStatus};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 /// Response from listing traces.
@@ -67,8 +68,8 @@ impl Client {
                 trace_id: t.trace_id,
                 pipeline_id: t.pipeline_id,
                 status: parse_trace_status(&t.status),
-                started_at: t.started_at,
-                completed_at: t.completed_at,
+                started_at: parse_datetime(&t.started_at).unwrap_or_else(|_| Utc::now()),
+                completed_at: t.completed_at.and_then(|ts| parse_datetime(&ts).ok()),
             })
             .collect())
     }
@@ -110,8 +111,8 @@ impl Client {
                 trace_id: t.trace_id,
                 pipeline_id: t.pipeline_id,
                 status: parse_trace_status(&t.status),
-                started_at: t.started_at,
-                completed_at: t.completed_at,
+                started_at: parse_datetime(&t.started_at).unwrap_or_else(|_| Utc::now()),
+                completed_at: t.completed_at.and_then(|ts| parse_datetime(&ts).ok()),
             })
             .collect())
     }
@@ -155,8 +156,10 @@ impl Client {
             trace_id: get_response.trace_id,
             pipeline_id: get_response.pipeline_id,
             status: parse_trace_status(&get_response.status),
-            started_at: get_response.started_at,
-            completed_at: get_response.completed_at,
+            started_at: parse_datetime(&get_response.started_at).unwrap_or_else(|_| Utc::now()),
+            completed_at: get_response
+                .completed_at
+                .and_then(|ts| parse_datetime(&ts).ok()),
             nodes_executed: get_response.nodes_executed,
             error: get_response.error,
         })
@@ -173,4 +176,16 @@ fn parse_trace_status(status: &str) -> TraceStatus {
         "suspended" => TraceStatus::Suspended,
         _ => TraceStatus::Queued, // Default fallback
     }
+}
+
+/// Parse an ISO 8601 datetime string to DateTime<Utc>.
+fn parse_datetime(datetime_str: &str) -> std::result::Result<DateTime<Utc>, chrono::ParseError> {
+    // Try parsing with RFC 3339 format (ISO 8601 with timezone)
+    if let Ok(dt) = DateTime::parse_from_rfc3339(datetime_str) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    // Fallback for basic ISO 8601 format without timezone
+    use chrono::NaiveDateTime;
+    let naive = NaiveDateTime::parse_from_str(datetime_str, "%Y-%m-%dT%H:%M:%SZ")?;
+    Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
 }
