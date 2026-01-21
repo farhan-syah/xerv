@@ -30,12 +30,16 @@ pub async fn get_status(state: Arc<AppState>) -> Response<Full<Bytes>> {
     let mut running = 0u64;
     let mut completed = 0u64;
     let mut failed = 0u64;
+    let mut suspended = 0u64;
+    let mut canceled = 0u64;
 
     for trace in trace_history.all() {
         match trace.status {
             crate::api::state::TraceStatus::Running => running += 1,
             crate::api::state::TraceStatus::Completed => completed += 1,
             crate::api::state::TraceStatus::Failed => failed += 1,
+            crate::api::state::TraceStatus::Suspended => suspended += 1,
+            crate::api::state::TraceStatus::Canceled => canceled += 1,
         }
     }
 
@@ -51,7 +55,9 @@ pub async fn get_status(state: Arc<AppState>) -> Response<Full<Bytes>> {
             "history_size": trace_history.len(),
             "running": running,
             "completed": completed,
-            "failed": failed
+            "failed": failed,
+            "suspended": suspended,
+            "canceled": canceled
         },
         "triggers": {
             "registered": state.listener_pool.trigger_ids().len(),

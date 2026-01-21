@@ -82,6 +82,8 @@ pub struct Pipeline {
     shutdown_tx: broadcast::Sender<()>,
     /// Log collector for structured logging with correlation IDs.
     log_collector: Arc<BufferedCollector>,
+    /// Original flow definition (for retrieval and updates).
+    definition: xerv_core::flow::FlowDefinition,
 }
 
 impl Pipeline {
@@ -93,6 +95,11 @@ impl Pipeline {
     /// Get metrics.
     pub fn metrics(&self) -> &PipelineMetrics {
         &self.metrics
+    }
+
+    /// Get the flow definition.
+    pub fn definition(&self) -> &xerv_core::flow::FlowDefinition {
+        &self.definition
     }
 
     /// Start the pipeline.
@@ -392,6 +399,7 @@ pub struct PipelineBuilder {
     wal_config: WalConfig,
     executor_config: ExecutorConfig,
     log_collector: Option<Arc<BufferedCollector>>,
+    definition: Option<xerv_core::flow::FlowDefinition>,
 }
 
 impl PipelineBuilder {
@@ -408,6 +416,7 @@ impl PipelineBuilder {
             wal_config: WalConfig::from_env_or_default(),
             executor_config: ExecutorConfig::from_env_or_default(),
             log_collector: None,
+            definition: None,
         }
     }
 
@@ -459,8 +468,21 @@ impl PipelineBuilder {
         self
     }
 
+    /// Set the original flow definition.
+    pub fn with_definition(mut self, definition: xerv_core::flow::FlowDefinition) -> Self {
+        self.definition = Some(definition);
+        self
+    }
+
     /// Build the pipeline.
     pub fn build(self) -> Result<Pipeline> {
+        // Require definition to be set
+        let definition =
+            self.definition
+                .ok_or_else(|| xerv_core::error::XervError::ConfigValue {
+                    field: "definition".to_string(),
+                    cause: "Pipeline definition is required".to_string(),
+                })?;
         let wal = Arc::new(Wal::open(self.wal_config.clone())?);
 
         // Use provided log collector or create a new one
@@ -490,6 +512,7 @@ impl PipelineBuilder {
             metrics: Arc::new(PipelineMetrics::default()),
             shutdown_tx,
             log_collector,
+            definition,
         })
     }
 }
