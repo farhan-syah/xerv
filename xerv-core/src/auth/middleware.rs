@@ -19,7 +19,7 @@ impl AuthMiddleware {
     ) -> Result<AuthContext> {
         // If auth is disabled, return anonymous context
         if !config.enabled {
-            return Ok(AuthContext::anonymous());
+            return Ok(AuthContext::new("anonymous", super::AuthScope::all()));
         }
 
         // Check if path is exempt
@@ -121,7 +121,10 @@ mod tests {
 
         let result = AuthMiddleware::authenticate(&config, "/pipelines", &headers);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().identity, "anonymous");
+        let ctx = result.unwrap();
+        assert_eq!(ctx.identity, "anonymous");
+        assert!(ctx.has_scope(AuthScope::PipelineRead));
+        assert!(ctx.has_scope(AuthScope::PipelineWrite));
     }
 
     #[test]
