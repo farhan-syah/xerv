@@ -143,7 +143,7 @@ impl PipelineController {
         tracing::info!(name = %name, "Validating pipeline definition");
 
         // Load pipeline definition based on source
-        let _pipeline_yaml = match &pipeline.spec.source {
+        let pipeline_yaml = match &pipeline.spec.source {
             PipelineSource::ConfigMap { name, key } => {
                 self.load_from_configmap(namespace, name, key).await?
             }
@@ -151,8 +151,21 @@ impl PipelineController {
             PipelineSource::Inline { content } => content.clone(),
         };
 
-        // TODO: Validate pipeline YAML
-        // TODO: Deploy to cluster
+        // Validate pipeline YAML structure
+        self.validate_pipeline_yaml(&pipeline_yaml)?;
+
+        // Deploy pipeline to cluster via API
+        let cluster_endpoint = self
+            .get_cluster_endpoint(namespace, &pipeline.spec.cluster)
+            .await?;
+        self.deploy_to_cluster(&cluster_endpoint, &name, &pipeline_yaml)
+            .await?;
+
+        // Configure triggers if specified
+        for trigger in &pipeline.spec.triggers {
+            self.configure_trigger(&cluster_endpoint, &name, trigger)
+                .await?;
+        }
 
         // Update status to Active
         let active_triggers = pipeline.spec.triggers.len() as i32;
@@ -168,6 +181,7 @@ impl PipelineController {
                 active_triggers,
                 message: Some("Pipeline deployed successfully".into()),
                 last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                observed_generation: pipeline.metadata.generation,
                 ..Default::default()
             },
         )
@@ -186,13 +200,19 @@ impl PipelineController {
         &self,
         pipeline: &XervPipeline,
         api: &Api<XervPipeline>,
-        _namespace: &str,
+        namespace: &str,
     ) -> OperatorResult<ReconcileAction> {
         let name = pipeline.name_any();
         tracing::debug!(name = %name, "Pipeline is active, monitoring");
 
         // Check if paused flag changed
         if pipeline.spec.paused {
+            let cluster_endpoint = self
+                .get_cluster_endpoint(namespace, &pipeline.spec.cluster)
+                .await?;
+            self.pause_pipeline_in_cluster(&cluster_endpoint, &name)
+                .await?;
+
             self.update_status(
                 api,
                 &name,
@@ -207,8 +227,68 @@ impl PipelineController {
             return Ok(ReconcileAction::requeue_short());
         }
 
-        // TODO: Check for pipeline definition updates
-        // TODO: Update metrics from cluster
+        // Check for pipeline definition updates (generation changed)
+        let observed_gen = pipeline.status.as_ref().and_then(|s| s.observed_generation);
+        let current_gen = pipeline.metadata.generation;
+
+        if observed_gen != current_gen {
+            tracing::info!(
+                name = %name,
+                observed = ?observed_gen,
+                current = ?current_gen,
+                "Pipeline spec changed, redeploying"
+            );
+
+            // Reload and redeploy the pipeline
+            let pipeline_yaml = match &pipeline.spec.source {
+                PipelineSource::ConfigMap { name, key } => {
+                    self.load_from_configmap(namespace, name, key).await?
+                }
+                PipelineSource::Git(git) => self.load_from_git(git).await?,
+                PipelineSource::Inline { content } => content.clone(),
+            };
+
+            self.validate_pipeline_yaml(&pipeline_yaml)?;
+
+            let cluster_endpoint = self
+                .get_cluster_endpoint(namespace, &pipeline.spec.cluster)
+                .await?;
+            self.deploy_to_cluster(&cluster_endpoint, &name, &pipeline_yaml)
+                .await?;
+
+            self.update_status(
+                api,
+                &name,
+                XervPipelineStatus {
+                    phase: PipelinePhase::Active,
+                    message: Some("Pipeline updated".into()),
+                    last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                    observed_generation: current_gen,
+                    ..pipeline.status.clone().unwrap_or_default()
+                },
+            )
+            .await?;
+        }
+
+        // Update metrics from cluster
+        if let Ok(cluster_endpoint) = self
+            .get_cluster_endpoint(namespace, &pipeline.spec.cluster)
+            .await
+        {
+            if let Ok(metrics) = self.fetch_pipeline_metrics(&cluster_endpoint, &name).await {
+                self.update_status(
+                    api,
+                    &name,
+                    XervPipelineStatus {
+                        traces_completed: metrics.traces_completed,
+                        traces_failed: metrics.traces_failed,
+                        last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                        ..pipeline.status.clone().unwrap_or_default()
+                    },
+                )
+                .await?;
+            }
+        }
 
         Ok(ReconcileAction::requeue_long())
     }
@@ -218,13 +298,19 @@ impl PipelineController {
         &self,
         pipeline: &XervPipeline,
         api: &Api<XervPipeline>,
-        _namespace: &str,
+        namespace: &str,
     ) -> OperatorResult<ReconcileAction> {
         let name = pipeline.name_any();
         tracing::debug!(name = %name, "Pipeline is paused");
 
         // Check if unpaused
         if !pipeline.spec.paused {
+            let cluster_endpoint = self
+                .get_cluster_endpoint(namespace, &pipeline.spec.cluster)
+                .await?;
+            self.resume_pipeline_in_cluster(&cluster_endpoint, &name)
+                .await?;
+
             self.update_status(
                 api,
                 &name,
@@ -246,14 +332,106 @@ impl PipelineController {
     async fn handle_error(
         &self,
         pipeline: &XervPipeline,
-        _api: &Api<XervPipeline>,
-        _namespace: &str,
+        api: &Api<XervPipeline>,
+        namespace: &str,
     ) -> OperatorResult<ReconcileAction> {
         let name = pipeline.name_any();
-        tracing::warn!(name = %name, "Pipeline is in error state, attempting recovery");
+        let error_count = pipeline
+            .status
+            .as_ref()
+            .and_then(|s| s.error_count)
+            .unwrap_or(0);
 
-        // TODO: Implement recovery logic
-        Ok(ReconcileAction::requeue_medium())
+        tracing::warn!(
+            name = %name,
+            error_count = error_count,
+            "Pipeline is in error state, attempting recovery"
+        );
+
+        // Exponential backoff: don't retry too frequently
+        if error_count > 5 {
+            tracing::error!(
+                name = %name,
+                "Pipeline has failed too many times, manual intervention required"
+            );
+            return Ok(ReconcileAction::requeue_long());
+        }
+
+        // Attempt to redeploy
+        let cluster_endpoint = match self
+            .get_cluster_endpoint(namespace, &pipeline.spec.cluster)
+            .await
+        {
+            Ok(ep) => ep,
+            Err(e) => {
+                tracing::warn!(error = %e, "Cannot reach cluster, will retry");
+                self.update_status(
+                    api,
+                    &name,
+                    XervPipelineStatus {
+                        error_count: Some(error_count + 1),
+                        message: Some(format!(
+                            "Recovery attempt {} failed: {}",
+                            error_count + 1,
+                            e
+                        )),
+                        last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                        ..pipeline.status.clone().unwrap_or_default()
+                    },
+                )
+                .await?;
+                return Ok(ReconcileAction::requeue_medium());
+            }
+        };
+
+        // Try to reload and redeploy
+        let pipeline_yaml = match &pipeline.spec.source {
+            PipelineSource::ConfigMap { name, key } => {
+                self.load_from_configmap(namespace, name, key).await?
+            }
+            PipelineSource::Git(git) => self.load_from_git(git).await?,
+            PipelineSource::Inline { content } => content.clone(),
+        };
+
+        match self
+            .deploy_to_cluster(&cluster_endpoint, &name, &pipeline_yaml)
+            .await
+        {
+            Ok(()) => {
+                tracing::info!(name = %name, "Recovery successful, pipeline redeployed");
+                self.update_status(
+                    api,
+                    &name,
+                    XervPipelineStatus {
+                        phase: PipelinePhase::Active,
+                        message: Some("Recovered from error".into()),
+                        error_count: Some(0),
+                        last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                Ok(ReconcileAction::requeue_short())
+            }
+            Err(e) => {
+                self.update_status(
+                    api,
+                    &name,
+                    XervPipelineStatus {
+                        error_count: Some(error_count + 1),
+                        message: Some(format!(
+                            "Recovery attempt {} failed: {}",
+                            error_count + 1,
+                            e
+                        )),
+                        last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                        ..pipeline.status.clone().unwrap_or_default()
+                    },
+                )
+                .await?;
+                Ok(ReconcileAction::requeue_medium())
+            }
+        }
     }
 
     /// Handle terminating phase - cleanup.
@@ -261,14 +439,272 @@ impl PipelineController {
         &self,
         pipeline: &XervPipeline,
         _api: &Api<XervPipeline>,
-        _namespace: &str,
+        namespace: &str,
     ) -> OperatorResult<ReconcileAction> {
         let name = pipeline.name_any();
         tracing::info!(name = %name, "Pipeline is terminating, cleaning up");
 
-        // TODO: Remove pipeline from cluster
-        // TODO: Clean up triggers
+        // Get cluster endpoint (if available)
+        if let Ok(cluster_endpoint) = self
+            .get_cluster_endpoint(namespace, &pipeline.spec.cluster)
+            .await
+        {
+            // Remove pipeline from cluster
+            if let Err(e) = self
+                .remove_pipeline_from_cluster(&cluster_endpoint, &name)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to remove pipeline from cluster");
+            }
+
+            // Clean up triggers
+            for trigger in &pipeline.spec.triggers {
+                if let Err(e) = self.remove_trigger(&cluster_endpoint, &name, trigger).await {
+                    tracing::warn!(
+                        trigger = %trigger.name,
+                        error = %e,
+                        "Failed to remove trigger"
+                    );
+                }
+            }
+        }
+
+        tracing::info!(name = %name, "Pipeline cleanup complete");
         Ok(ReconcileAction::Done)
+    }
+
+    /// Validate pipeline YAML structure.
+    fn validate_pipeline_yaml(&self, yaml: &str) -> OperatorResult<()> {
+        // Parse YAML to check structure
+        let doc: serde_yaml::Value = serde_yaml::from_str(yaml)
+            .map_err(|e| OperatorError::ValidationError(format!("Invalid YAML: {}", e)))?;
+
+        // Check required fields
+        let obj = doc.as_mapping().ok_or_else(|| {
+            OperatorError::ValidationError("Pipeline YAML must be a mapping".into())
+        })?;
+
+        if !obj.contains_key(serde_yaml::Value::String("name".to_string())) {
+            return Err(OperatorError::ValidationError(
+                "Pipeline must have a 'name' field".into(),
+            ));
+        }
+
+        if !obj.contains_key(serde_yaml::Value::String("nodes".to_string())) {
+            return Err(OperatorError::ValidationError(
+                "Pipeline must have a 'nodes' field".into(),
+            ));
+        }
+
+        tracing::debug!("Pipeline YAML validation passed");
+        Ok(())
+    }
+
+    /// Get the endpoint URL for a cluster.
+    async fn get_cluster_endpoint(
+        &self,
+        namespace: &str,
+        cluster_name: &str,
+    ) -> OperatorResult<String> {
+        let clusters: Api<XervCluster> = Api::namespaced(self.ctx.client.clone(), namespace);
+        let cluster = clusters
+            .get(cluster_name)
+            .await
+            .map_err(|_| OperatorError::NotFound {
+                kind: "XervCluster".into(),
+                name: cluster_name.into(),
+                namespace: namespace.into(),
+            })?;
+
+        cluster
+            .status
+            .as_ref()
+            .and_then(|s| s.endpoint.clone())
+            .ok_or_else(|| OperatorError::ClusterNotReady {
+                name: cluster_name.into(),
+                reason: "Cluster endpoint not available".into(),
+            })
+    }
+
+    /// Deploy pipeline to cluster via REST API.
+    async fn deploy_to_cluster(
+        &self,
+        endpoint: &str,
+        pipeline_name: &str,
+        yaml: &str,
+    ) -> OperatorResult<()> {
+        let url = format!("{}/api/v1/pipelines", endpoint);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/x-yaml")
+            .body(yaml.to_string())
+            .send()
+            .await
+            .map_err(|e| OperatorError::ApiError(format!("Failed to deploy pipeline: {}", e)))?;
+
+        if resp.status().is_success() || resp.status().as_u16() == 409 {
+            // 409 Conflict means pipeline already exists, which is OK for updates
+            tracing::debug!(pipeline = %pipeline_name, "Pipeline deployed to cluster");
+            Ok(())
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Err(OperatorError::ApiError(format!(
+                "Deploy failed ({}): {}",
+                status, body
+            )))
+        }
+    }
+
+    /// Remove pipeline from cluster via REST API.
+    async fn remove_pipeline_from_cluster(
+        &self,
+        endpoint: &str,
+        pipeline_name: &str,
+    ) -> OperatorResult<()> {
+        let url = format!("{}/api/v1/pipelines/{}", endpoint, pipeline_name);
+
+        let client = reqwest::Client::new();
+        let resp =
+            client.delete(&url).send().await.map_err(|e| {
+                OperatorError::ApiError(format!("Failed to remove pipeline: {}", e))
+            })?;
+
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            tracing::debug!(pipeline = %pipeline_name, "Pipeline removed from cluster");
+            Ok(())
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Err(OperatorError::ApiError(format!(
+                "Remove failed ({}): {}",
+                status, body
+            )))
+        }
+    }
+
+    /// Pause pipeline in cluster.
+    async fn pause_pipeline_in_cluster(
+        &self,
+        endpoint: &str,
+        pipeline_name: &str,
+    ) -> OperatorResult<()> {
+        let url = format!("{}/api/v1/pipelines/{}/pause", endpoint, pipeline_name);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| OperatorError::ApiError(format!("Failed to pause pipeline: {}", e)))?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(OperatorError::ApiError("Pause failed".into()))
+        }
+    }
+
+    /// Resume pipeline in cluster.
+    async fn resume_pipeline_in_cluster(
+        &self,
+        endpoint: &str,
+        pipeline_name: &str,
+    ) -> OperatorResult<()> {
+        let url = format!("{}/api/v1/pipelines/{}/resume", endpoint, pipeline_name);
+
+        let client = reqwest::Client::new();
+        let resp =
+            client.post(&url).send().await.map_err(|e| {
+                OperatorError::ApiError(format!("Failed to resume pipeline: {}", e))
+            })?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(OperatorError::ApiError("Resume failed".into()))
+        }
+    }
+
+    /// Configure a trigger in the cluster.
+    async fn configure_trigger(
+        &self,
+        endpoint: &str,
+        pipeline_name: &str,
+        trigger: &crate::crd::PipelineTrigger,
+    ) -> OperatorResult<()> {
+        let url = format!("{}/api/v1/pipelines/{}/triggers", endpoint, pipeline_name);
+
+        let client = reqwest::Client::new();
+        let resp =
+            client.post(&url).json(&trigger).send().await.map_err(|e| {
+                OperatorError::ApiError(format!("Failed to configure trigger: {}", e))
+            })?;
+
+        if resp.status().is_success() || resp.status().as_u16() == 409 {
+            tracing::debug!(
+                pipeline = %pipeline_name,
+                trigger = %trigger.name,
+                "Trigger configured"
+            );
+            Ok(())
+        } else {
+            Err(OperatorError::ApiError(
+                "Trigger configuration failed".into(),
+            ))
+        }
+    }
+
+    /// Remove a trigger from the cluster.
+    async fn remove_trigger(
+        &self,
+        endpoint: &str,
+        pipeline_name: &str,
+        trigger: &crate::crd::PipelineTrigger,
+    ) -> OperatorResult<()> {
+        let url = format!(
+            "{}/api/v1/pipelines/{}/triggers/{}",
+            endpoint, pipeline_name, trigger.name
+        );
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| OperatorError::ApiError(format!("Failed to remove trigger: {}", e)))?;
+
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            Ok(())
+        } else {
+            Err(OperatorError::ApiError("Trigger removal failed".into()))
+        }
+    }
+
+    /// Fetch pipeline metrics from cluster.
+    async fn fetch_pipeline_metrics(
+        &self,
+        endpoint: &str,
+        pipeline_name: &str,
+    ) -> OperatorResult<PipelineMetrics> {
+        let url = format!("{}/api/v1/pipelines/{}/metrics", endpoint, pipeline_name);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| OperatorError::ApiError(format!("Failed to fetch metrics: {}", e)))?;
+
+        if resp.status().is_success() {
+            resp.json::<PipelineMetrics>()
+                .await
+                .map_err(|e| OperatorError::ApiError(format!("Failed to parse metrics: {}", e)))
+        } else {
+            Err(OperatorError::ApiError("Metrics fetch failed".into()))
+        }
     }
 
     /// Load pipeline definition from a ConfigMap.
@@ -298,13 +734,59 @@ impl PipelineController {
     }
 
     /// Load pipeline definition from a Git repository.
-    async fn load_from_git(&self, _git: &crate::crd::GitSource) -> OperatorResult<String> {
-        // TODO: Implement Git fetch
-        // For now, return a placeholder
-        tracing::warn!("Git source loading not yet implemented");
-        Err(OperatorError::InvalidConfig(
-            "Git source not yet implemented".into(),
-        ))
+    async fn load_from_git(&self, git: &crate::crd::GitSource) -> OperatorResult<String> {
+        use std::process::Command;
+
+        // Create temporary directory for clone
+        let temp_dir = std::env::temp_dir().join(format!("xerv-git-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir)
+            .map_err(|e| OperatorError::IoError(format!("Failed to create temp dir: {}", e)))?;
+
+        // Build git clone command
+        let mut cmd = Command::new("git");
+        cmd.arg("clone")
+            .arg("--depth")
+            .arg("1")
+            .arg("--single-branch");
+
+        if !git.ref_name.is_empty() {
+            cmd.arg("--branch").arg(&git.ref_name);
+        }
+
+        cmd.arg(&git.repo).arg(&temp_dir);
+
+        // Execute clone
+        let output = cmd
+            .output()
+            .map_err(|e| OperatorError::IoError(format!("Git clone failed: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Clean up temp dir
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(OperatorError::IoError(format!(
+                "Git clone failed: {}",
+                stderr
+            )));
+        }
+
+        // Read the pipeline file
+        let file_path = temp_dir.join(&git.path);
+        let content = std::fs::read_to_string(&file_path).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            OperatorError::IoError(format!("Failed to read file '{}': {}", git.path, e))
+        })?;
+
+        // Clean up temp dir
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        tracing::info!(
+            repository = %git.repo,
+            path = %git.path,
+            "Loaded pipeline from Git"
+        );
+
+        Ok(content)
     }
 
     /// Update the pipeline status.
@@ -323,6 +805,15 @@ impl PipelineController {
 
         Ok(())
     }
+}
+
+/// Pipeline metrics from cluster.
+#[derive(Debug, serde::Deserialize)]
+struct PipelineMetrics {
+    #[serde(default)]
+    traces_completed: i64,
+    #[serde(default)]
+    traces_failed: i64,
 }
 
 /// Handle errors during reconciliation.

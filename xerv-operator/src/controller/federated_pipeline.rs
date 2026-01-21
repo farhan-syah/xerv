@@ -185,9 +185,18 @@ impl FederatedPipelineController {
 
         // Deploy to each cluster based on rollout strategy
         let cluster_statuses = match pipeline.spec.rollout.strategy {
-            RolloutStrategy::AllAtOnce => self.deploy_all_at_once(pipeline, &target_clusters).await,
-            RolloutStrategy::Rolling => self.deploy_rolling(pipeline, &target_clusters).await,
-            RolloutStrategy::Canary => self.deploy_canary(pipeline, &target_clusters).await,
+            RolloutStrategy::AllAtOnce => {
+                self.deploy_all_at_once(pipeline, &target_clusters, federation)
+                    .await
+            }
+            RolloutStrategy::Rolling => {
+                self.deploy_rolling(pipeline, &target_clusters, federation)
+                    .await
+            }
+            RolloutStrategy::Canary => {
+                self.deploy_canary(pipeline, &target_clusters, federation)
+                    .await
+            }
         };
 
         // Check if all clusters are synced
@@ -247,7 +256,6 @@ impl FederatedPipelineController {
                     reason: Some(format!("{:?}", status)),
                     message: None,
                 }],
-                ..Default::default()
             },
         )
         .await?;
@@ -306,7 +314,7 @@ impl FederatedPipelineController {
         // Verify pipeline state on each cluster
         let target_clusters = self.resolve_target_clusters(pipeline, federation);
         let cluster_statuses = self
-            .verify_pipeline_on_clusters(pipeline, &target_clusters)
+            .verify_pipeline_on_clusters(pipeline, &target_clusters, federation)
             .await;
 
         // Check if any clusters are out of sync
@@ -552,11 +560,14 @@ impl FederatedPipelineController {
         &self,
         pipeline: &FederatedPipeline,
         target_clusters: &[String],
+        federation: &XervFederation,
     ) -> Vec<ClusterPipelineStatus> {
         let mut statuses = Vec::with_capacity(target_clusters.len());
 
         for cluster_name in target_clusters {
-            let status = self.deploy_to_cluster(pipeline, cluster_name).await;
+            let status = self
+                .deploy_to_cluster(pipeline, cluster_name, federation)
+                .await;
             statuses.push(status);
         }
 
@@ -568,6 +579,7 @@ impl FederatedPipelineController {
         &self,
         pipeline: &FederatedPipeline,
         target_clusters: &[String],
+        federation: &XervFederation,
     ) -> Vec<ClusterPipelineStatus> {
         let mut statuses = Vec::with_capacity(target_clusters.len());
         let max_surge = pipeline.spec.rollout.max_surge.max(1) as usize;
@@ -575,7 +587,9 @@ impl FederatedPipelineController {
 
         for chunk in target_clusters.chunks(max_surge) {
             for cluster_name in chunk {
-                let status = self.deploy_to_cluster(pipeline, cluster_name).await;
+                let status = self
+                    .deploy_to_cluster(pipeline, cluster_name, federation)
+                    .await;
                 statuses.push(status);
             }
 
@@ -593,12 +607,13 @@ impl FederatedPipelineController {
         &self,
         pipeline: &FederatedPipeline,
         target_clusters: &[String],
+        federation: &XervFederation,
     ) -> Vec<ClusterPipelineStatus> {
         let mut statuses = Vec::with_capacity(target_clusters.len());
 
         if let Some(first) = target_clusters.first() {
             // Deploy to first cluster (canary)
-            let status = self.deploy_to_cluster(pipeline, first).await;
+            let status = self.deploy_to_cluster(pipeline, first, federation).await;
             let canary_success = status.synced;
             statuses.push(status);
 
@@ -609,7 +624,9 @@ impl FederatedPipelineController {
                 tokio::time::sleep(pause).await;
 
                 for cluster_name in target_clusters.iter().skip(1) {
-                    let status = self.deploy_to_cluster(pipeline, cluster_name).await;
+                    let status = self
+                        .deploy_to_cluster(pipeline, cluster_name, federation)
+                        .await;
                     statuses.push(status);
                 }
             }
@@ -623,12 +640,13 @@ impl FederatedPipelineController {
         &self,
         pipeline: &FederatedPipeline,
         target_clusters: &[String],
+        federation: &XervFederation,
     ) -> Vec<ClusterPipelineStatus> {
         let mut statuses = Vec::with_capacity(target_clusters.len());
 
         for cluster_name in target_clusters {
             let status = self
-                .verify_pipeline_on_cluster(pipeline, cluster_name)
+                .verify_pipeline_on_cluster(pipeline, cluster_name, federation)
                 .await;
             statuses.push(status);
         }
@@ -641,6 +659,7 @@ impl FederatedPipelineController {
         &self,
         pipeline: &FederatedPipeline,
         cluster_name: &str,
+        federation: &XervFederation,
     ) -> ClusterPipelineStatus {
         let name = pipeline.name_any();
         tracing::debug!(
@@ -649,23 +668,23 @@ impl FederatedPipelineController {
             "Verifying pipeline state on cluster"
         );
 
-        // Get cluster endpoint
-        let endpoint = match self.get_cluster_endpoint(cluster_name).await {
+        // Get cluster endpoint from federation
+        let endpoint = match self.get_cluster_endpoint(cluster_name, federation) {
             Some(ep) => ep,
             None => {
-                // No endpoint configured - assume synced for testing
-                // In production with real clusters, this would fail
+                // Cluster not found in federation
                 return ClusterPipelineStatus {
                     cluster: cluster_name.to_string(),
-                    deployed: true,
-                    synced: true,
-                    generation: pipeline.metadata.generation.unwrap_or(1),
-                    status: "Unknown".to_string(),
+                    deployed: false,
+                    synced: false,
+                    generation: 0,
+                    status: "NotFound".to_string(),
                     active_traces: 0,
                     last_deployed: None,
                     error: Some(format!(
-                        "Cluster '{}' endpoint not configured, assuming synced",
-                        cluster_name
+                        "Cluster '{}' not found in federation '{}'",
+                        cluster_name,
+                        federation.name_any()
                     )),
                 };
             }
@@ -806,6 +825,7 @@ impl FederatedPipelineController {
         &self,
         pipeline: &FederatedPipeline,
         cluster_name: &str,
+        federation: &XervFederation,
     ) -> ClusterPipelineStatus {
         let name = pipeline.name_any();
         tracing::info!(
@@ -814,8 +834,8 @@ impl FederatedPipelineController {
             "Deploying pipeline to cluster"
         );
 
-        // Get cluster endpoint from context (federation spec)
-        let endpoint = match self.get_cluster_endpoint(cluster_name).await {
+        // Get cluster endpoint from federation spec
+        let endpoint = match self.get_cluster_endpoint(cluster_name, federation) {
             Some(ep) => ep,
             None => {
                 return ClusterPipelineStatus {
@@ -827,8 +847,9 @@ impl FederatedPipelineController {
                     active_traces: 0,
                     last_deployed: None,
                     error: Some(format!(
-                        "Cluster '{}' not found in federation",
-                        cluster_name
+                        "Cluster '{}' not found in federation '{}'",
+                        cluster_name,
+                        federation.name_any()
                     )),
                 };
             }
@@ -884,23 +905,40 @@ impl FederatedPipelineController {
         }
     }
 
-    /// Get cluster endpoint from context.
+    /// Get cluster endpoint from the federation spec.
     ///
-    /// In production, this would look up the federation spec for the cluster.
-    /// For testing without a live cluster, returns None.
-    async fn get_cluster_endpoint(&self, cluster_name: &str) -> Option<String> {
-        // In a real implementation, we would:
-        // 1. Look up the federation from the pipeline's spec.federation
-        // 2. Find the cluster in federation.spec.clusters
-        // 3. Return the endpoint
-        //
-        // For now, we need to have this endpoint stored or passed through context.
-        // This is a placeholder that should be enhanced when federation lookup is needed.
+    /// Looks up the cluster by name in the federation's cluster list and returns
+    /// the endpoint URL if the cluster is found and enabled.
+    fn get_cluster_endpoint(
+        &self,
+        cluster_name: &str,
+        federation: &XervFederation,
+    ) -> Option<String> {
+        // Find the cluster in the federation's cluster list
+        let cluster = federation
+            .spec
+            .clusters
+            .iter()
+            .find(|c| c.name == cluster_name)?;
+
+        // Check if the cluster is enabled
+        if !cluster.enabled {
+            tracing::debug!(
+                cluster = %cluster_name,
+                federation = %federation.name_any(),
+                "Cluster is disabled in federation"
+            );
+            return None;
+        }
+
         tracing::debug!(
             cluster = %cluster_name,
-            "Looking up cluster endpoint (placeholder - no live cluster configured)"
+            endpoint = %cluster.endpoint,
+            federation = %federation.name_any(),
+            "Found cluster endpoint in federation"
         );
-        None
+
+        Some(cluster.endpoint.clone())
     }
 
     /// Deploy pipeline via HTTP POST to cluster's pipeline API.

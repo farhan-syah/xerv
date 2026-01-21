@@ -282,13 +282,25 @@ pub struct XervPipelineStatus {
     #[serde(default)]
     pub total_traces: i64,
 
-    /// Successful traces.
+    /// Successful traces (alias: traces_completed).
     #[serde(default)]
     pub successful_traces: i64,
 
-    /// Failed traces.
+    /// Alias for successful_traces for backward compatibility.
+    #[serde(default)]
+    pub traces_completed: i64,
+
+    /// Failed traces (alias: traces_failed).
     #[serde(default)]
     pub failed_traces: i64,
+
+    /// Alias for failed_traces for backward compatibility.
+    #[serde(default)]
+    pub traces_failed: i64,
+
+    /// Error count for retry tracking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_count: Option<i32>,
 
     /// Last successful trace time.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -309,6 +321,10 @@ pub struct XervPipelineStatus {
     /// Human-readable message about current state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+
+    /// Observed generation for change detection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
 }
 
 /// Pipeline phase.

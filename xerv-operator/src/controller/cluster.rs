@@ -7,8 +7,8 @@ use crate::crd::{ClusterPhase, XervCluster, XervClusterStatus};
 use crate::error::{OperatorError, OperatorResult};
 use crate::resources;
 use k8s_openapi::api::apps::v1::{Deployment, StatefulSet};
-use k8s_openapi::api::core::v1::{ConfigMap, Service};
-use kube::api::{Patch, PatchParams, PostParams};
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, Service};
+use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Api, ResourceExt};
 use std::sync::Arc;
 
@@ -102,6 +102,7 @@ impl ClusterController {
                 phase: ClusterPhase::Initializing,
                 message: Some("Creating cluster resources".into()),
                 last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                observed_generation: cluster.metadata.generation,
                 ..Default::default()
             },
         )
@@ -294,6 +295,7 @@ impl ClusterController {
                     endpoint: Some(endpoint),
                     message: Some("Cluster is running".into()),
                     last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                    observed_generation: cluster.metadata.generation,
                     ..Default::default()
                 },
             )
@@ -362,31 +364,196 @@ impl ClusterController {
     async fn handle_running(
         &self,
         cluster: &XervCluster,
-        _api: &Api<XervCluster>,
-        _namespace: &str,
+        api: &Api<XervCluster>,
+        namespace: &str,
     ) -> OperatorResult<ReconcileAction> {
         let name = cluster.name_any();
         tracing::debug!(name = %name, "Cluster is running, checking for drift");
 
-        // TODO: Check for spec changes that require updates
-        // TODO: Check pod health
-        // TODO: Update metrics
+        // Check for spec changes that require updates (generation changed)
+        let observed_gen = cluster.status.as_ref().and_then(|s| s.observed_generation);
+        let current_gen = cluster.metadata.generation;
 
-        // For now, just requeue for periodic check
+        if observed_gen != current_gen {
+            tracing::info!(
+                name = %name,
+                observed = ?observed_gen,
+                current = ?current_gen,
+                "Cluster spec changed, transitioning to Updating phase"
+            );
+
+            self.update_status(
+                api,
+                &name,
+                XervClusterStatus {
+                    phase: ClusterPhase::Updating,
+                    message: Some("Applying configuration changes".into()),
+                    last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                    ..cluster.status.clone().unwrap_or_default()
+                },
+            )
+            .await?;
+
+            // Reapply resources
+            self.ensure_configmap(cluster, namespace).await?;
+            if cluster.spec.dispatch.backend == "raft" {
+                self.ensure_statefulset(cluster, namespace).await?;
+            } else {
+                self.ensure_deployment(cluster, namespace).await?;
+            }
+
+            return Ok(ReconcileAction::requeue_short());
+        }
+
+        // Check pod health
+        let (healthy_pods, unhealthy_pods) = self.check_pod_health(&name, namespace).await?;
+        let total_pods = healthy_pods + unhealthy_pods;
+
+        if unhealthy_pods > 0 {
+            tracing::warn!(
+                name = %name,
+                healthy = healthy_pods,
+                unhealthy = unhealthy_pods,
+                "Cluster has unhealthy pods"
+            );
+
+            // Transition to Degraded if more than 50% unhealthy
+            if unhealthy_pods > healthy_pods {
+                self.update_status(
+                    api,
+                    &name,
+                    XervClusterStatus {
+                        phase: ClusterPhase::Degraded,
+                        ready_replicas: healthy_pods,
+                        available_replicas: healthy_pods,
+                        message: Some(format!("{}/{} pods unhealthy", unhealthy_pods, total_pods)),
+                        last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                        ..cluster.status.clone().unwrap_or_default()
+                    },
+                )
+                .await?;
+                return Ok(ReconcileAction::requeue_short());
+            }
+        }
+
+        // Update metrics
+        let (ready_replicas, available_replicas) = if cluster.spec.dispatch.backend == "raft" {
+            self.get_statefulset_status(&name, namespace).await?
+        } else {
+            self.get_deployment_status(&name, namespace).await?
+        };
+
+        self.update_status(
+            api,
+            &name,
+            XervClusterStatus {
+                ready_replicas,
+                available_replicas,
+                last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                observed_generation: current_gen,
+                ..cluster.status.clone().unwrap_or_default()
+            },
+        )
+        .await?;
+
         Ok(ReconcileAction::requeue_long())
+    }
+
+    /// Check pod health for the cluster.
+    async fn check_pod_health(&self, name: &str, namespace: &str) -> OperatorResult<(i32, i32)> {
+        let pods: Api<Pod> = Api::namespaced(self.ctx.client.clone(), namespace);
+        let label_selector = format!("app.kubernetes.io/instance={}", name);
+
+        let pod_list = pods
+            .list(&ListParams::default().labels(&label_selector))
+            .await?;
+
+        let mut healthy = 0;
+        let mut unhealthy = 0;
+
+        for pod in pod_list.items {
+            let is_healthy = pod
+                .status
+                .as_ref()
+                .and_then(|s| s.conditions.as_ref())
+                .map(|conditions| {
+                    conditions
+                        .iter()
+                        .any(|c| c.type_ == "Ready" && c.status == "True")
+                })
+                .unwrap_or(false);
+
+            if is_healthy {
+                healthy += 1;
+            } else {
+                unhealthy += 1;
+            }
+        }
+
+        Ok((healthy, unhealthy))
     }
 
     /// Handle updating phase - rolling update in progress.
     async fn handle_updating(
         &self,
         cluster: &XervCluster,
-        _api: &Api<XervCluster>,
-        _namespace: &str,
+        api: &Api<XervCluster>,
+        namespace: &str,
     ) -> OperatorResult<ReconcileAction> {
         let name = cluster.name_any();
-        tracing::info!(name = %name, "Cluster is updating");
+        tracing::info!(name = %name, "Cluster is updating, monitoring progress");
 
-        // TODO: Monitor rolling update progress
+        // Check update progress
+        let (ready_replicas, _available_replicas) = if cluster.spec.dispatch.backend == "raft" {
+            self.get_statefulset_status(&name, namespace).await?
+        } else {
+            self.get_deployment_status(&name, namespace).await?
+        };
+
+        // Check if update is complete
+        if ready_replicas >= cluster.spec.replicas {
+            tracing::info!(name = %name, "Rolling update complete");
+            self.update_status(
+                api,
+                &name,
+                XervClusterStatus {
+                    phase: ClusterPhase::Running,
+                    ready_replicas,
+                    available_replicas: ready_replicas,
+                    message: Some("Update complete".into()),
+                    last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                    observed_generation: cluster.metadata.generation,
+                    ..cluster.status.clone().unwrap_or_default()
+                },
+            )
+            .await?;
+            return Ok(ReconcileAction::requeue_long());
+        }
+
+        // Still updating, log progress
+        tracing::info!(
+            name = %name,
+            ready = ready_replicas,
+            desired = cluster.spec.replicas,
+            "Rolling update in progress"
+        );
+
+        // Update status with progress
+        self.update_status(
+            api,
+            &name,
+            XervClusterStatus {
+                ready_replicas,
+                message: Some(format!(
+                    "Updating: {}/{} pods ready",
+                    ready_replicas, cluster.spec.replicas
+                )),
+                last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                ..cluster.status.clone().unwrap_or_default()
+            },
+        )
+        .await?;
+
         Ok(ReconcileAction::requeue_short())
     }
 
@@ -394,13 +561,103 @@ impl ClusterController {
     async fn handle_degraded(
         &self,
         cluster: &XervCluster,
-        _api: &Api<XervCluster>,
-        _namespace: &str,
+        api: &Api<XervCluster>,
+        namespace: &str,
     ) -> OperatorResult<ReconcileAction> {
         let name = cluster.name_any();
         tracing::warn!(name = %name, "Cluster is degraded, attempting recovery");
 
-        // TODO: Attempt to recover unhealthy pods
+        // Check pod health again
+        let (healthy_pods, unhealthy_pods) = self.check_pod_health(&name, namespace).await?;
+
+        if unhealthy_pods == 0 {
+            // All pods recovered
+            tracing::info!(name = %name, "All pods recovered, transitioning to Running");
+            self.update_status(
+                api,
+                &name,
+                XervClusterStatus {
+                    phase: ClusterPhase::Running,
+                    ready_replicas: healthy_pods,
+                    available_replicas: healthy_pods,
+                    message: Some("Recovered from degraded state".into()),
+                    last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                    ..cluster.status.clone().unwrap_or_default()
+                },
+            )
+            .await?;
+            return Ok(ReconcileAction::requeue_long());
+        }
+
+        // Attempt pod recovery by deleting unhealthy pods
+        // Kubernetes will recreate them via the StatefulSet/Deployment
+        let pods: Api<Pod> = Api::namespaced(self.ctx.client.clone(), namespace);
+        let label_selector = format!("app.kubernetes.io/instance={}", name);
+
+        let pod_list = pods
+            .list(&ListParams::default().labels(&label_selector))
+            .await?;
+
+        let mut deleted_count = 0;
+        for pod in pod_list.items {
+            let pod_name = pod.metadata.name.as_deref().unwrap_or("");
+            let is_healthy = pod
+                .status
+                .as_ref()
+                .and_then(|s| s.conditions.as_ref())
+                .map(|conditions| {
+                    conditions
+                        .iter()
+                        .any(|c| c.type_ == "Ready" && c.status == "True")
+                })
+                .unwrap_or(false);
+
+            if !is_healthy && deleted_count < 1 {
+                // Delete one unhealthy pod at a time to avoid disruption
+                tracing::info!(pod = %pod_name, "Deleting unhealthy pod for recovery");
+                if let Err(e) = pods.delete(pod_name, &DeleteParams::default()).await {
+                    tracing::warn!(pod = %pod_name, error = %e, "Failed to delete unhealthy pod");
+                } else {
+                    deleted_count += 1;
+                }
+            }
+        }
+
+        // If no healthy pods remain, transition to Failed
+        if healthy_pods == 0 && unhealthy_pods > 0 {
+            tracing::error!(name = %name, "No healthy pods, transitioning to Failed");
+            self.update_status(
+                api,
+                &name,
+                XervClusterStatus {
+                    phase: ClusterPhase::Failed,
+                    message: Some("All pods are unhealthy".into()),
+                    last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                    ..cluster.status.clone().unwrap_or_default()
+                },
+            )
+            .await?;
+            return Ok(ReconcileAction::requeue_medium());
+        }
+
+        // Update status
+        self.update_status(
+            api,
+            &name,
+            XervClusterStatus {
+                ready_replicas: healthy_pods,
+                available_replicas: healthy_pods,
+                message: Some(format!(
+                    "Degraded: {}/{} pods healthy, attempting recovery",
+                    healthy_pods,
+                    healthy_pods + unhealthy_pods
+                )),
+                last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                ..cluster.status.clone().unwrap_or_default()
+            },
+        )
+        .await?;
+
         Ok(ReconcileAction::requeue_short())
     }
 
@@ -408,14 +665,78 @@ impl ClusterController {
     async fn handle_failed(
         &self,
         cluster: &XervCluster,
-        _api: &Api<XervCluster>,
-        _namespace: &str,
+        api: &Api<XervCluster>,
+        namespace: &str,
     ) -> OperatorResult<ReconcileAction> {
         let name = cluster.name_any();
-        tracing::error!(name = %name, "Cluster has failed");
+        let retry_count = cluster
+            .status
+            .as_ref()
+            .and_then(|s| s.retry_count)
+            .unwrap_or(0);
 
-        // TODO: Implement recovery strategy
-        Ok(ReconcileAction::requeue_medium())
+        tracing::error!(
+            name = %name,
+            retry_count = retry_count,
+            "Cluster has failed, implementing recovery strategy"
+        );
+
+        // Limit retries to prevent infinite loops
+        if retry_count >= 5 {
+            tracing::error!(
+                name = %name,
+                "Max retries reached, manual intervention required"
+            );
+            self.update_status(
+                api,
+                &name,
+                XervClusterStatus {
+                    message: Some("Max retries reached, manual intervention required".into()),
+                    last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                    ..cluster.status.clone().unwrap_or_default()
+                },
+            )
+            .await?;
+            return Ok(ReconcileAction::requeue_long());
+        }
+
+        // Attempt recovery by recreating resources
+        tracing::info!(
+            name = %name,
+            attempt = retry_count + 1,
+            "Attempting cluster recovery"
+        );
+
+        // Delete and recreate workload
+        if cluster.spec.dispatch.backend == "raft" {
+            let statefulsets: Api<StatefulSet> =
+                Api::namespaced(self.ctx.client.clone(), namespace);
+            let _ = statefulsets.delete(&name, &DeleteParams::default()).await;
+            // Wait a bit before recreating
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            self.ensure_statefulset(cluster, namespace).await?;
+        } else {
+            let deployments: Api<Deployment> = Api::namespaced(self.ctx.client.clone(), namespace);
+            let _ = deployments.delete(&name, &DeleteParams::default()).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            self.ensure_deployment(cluster, namespace).await?;
+        }
+
+        // Update status
+        self.update_status(
+            api,
+            &name,
+            XervClusterStatus {
+                phase: ClusterPhase::Initializing,
+                retry_count: Some(retry_count + 1),
+                message: Some(format!("Recovery attempt {}", retry_count + 1)),
+                last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        Ok(ReconcileAction::requeue_short())
     }
 
     /// Handle terminating phase - cleanup resources.
@@ -423,13 +744,49 @@ impl ClusterController {
         &self,
         cluster: &XervCluster,
         _api: &Api<XervCluster>,
-        _namespace: &str,
+        namespace: &str,
     ) -> OperatorResult<ReconcileAction> {
         let name = cluster.name_any();
-        tracing::info!(name = %name, "Cluster is terminating, cleaning up");
+        tracing::info!(name = %name, "Cluster is terminating, cleaning up resources");
 
-        // TODO: Clean up resources
-        // Finalizers will handle actual deletion
+        // Delete workload
+        if cluster.spec.dispatch.backend == "raft" {
+            let statefulsets: Api<StatefulSet> =
+                Api::namespaced(self.ctx.client.clone(), namespace);
+            if let Err(e) = statefulsets.delete(&name, &DeleteParams::default()).await {
+                if !matches!(&e, kube::Error::Api(err) if err.code == 404) {
+                    tracing::warn!(error = %e, "Failed to delete StatefulSet");
+                }
+            }
+        } else {
+            let deployments: Api<Deployment> = Api::namespaced(self.ctx.client.clone(), namespace);
+            if let Err(e) = deployments.delete(&name, &DeleteParams::default()).await {
+                if !matches!(&e, kube::Error::Api(err) if err.code == 404) {
+                    tracing::warn!(error = %e, "Failed to delete Deployment");
+                }
+            }
+        }
+
+        // Delete services
+        let services: Api<Service> = Api::namespaced(self.ctx.client.clone(), namespace);
+        for suffix in ["", "-headless"] {
+            let svc_name = format!("{}{}", name, suffix);
+            if let Err(e) = services.delete(&svc_name, &DeleteParams::default()).await {
+                if !matches!(&e, kube::Error::Api(err) if err.code == 404) {
+                    tracing::warn!(name = %svc_name, error = %e, "Failed to delete Service");
+                }
+            }
+        }
+
+        // Delete ConfigMap
+        let configmaps: Api<ConfigMap> = Api::namespaced(self.ctx.client.clone(), namespace);
+        if let Err(e) = configmaps.delete(&name, &DeleteParams::default()).await {
+            if !matches!(&e, kube::Error::Api(err) if err.code == 404) {
+                tracing::warn!(error = %e, "Failed to delete ConfigMap");
+            }
+        }
+
+        tracing::info!(name = %name, "Cluster resource cleanup complete");
         Ok(ReconcileAction::Done)
     }
 

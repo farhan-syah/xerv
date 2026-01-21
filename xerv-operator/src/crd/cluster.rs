@@ -302,6 +302,14 @@ pub struct XervClusterStatus {
     /// Human-readable message about current state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+
+    /// Observed generation for change detection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+
+    /// Retry count for failure recovery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_count: Option<i32>,
 }
 
 /// Cluster phase.

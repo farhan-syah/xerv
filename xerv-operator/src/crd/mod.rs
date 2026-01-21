@@ -32,3 +32,6 @@ pub use pipeline::{
     GitSource, PipelineCondition, PipelinePhase, PipelineSource, TriggerSpec, XervPipeline,
     XervPipelineSpec, XervPipelineStatus,
 };
+
+/// Type alias for backward compatibility with pipeline triggers.
+pub type PipelineTrigger = TriggerSpec;

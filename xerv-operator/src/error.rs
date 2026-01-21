@@ -59,6 +59,26 @@ pub enum OperatorError {
     /// Deployment error.
     #[error("Deployment failed: {0}")]
     DeploymentError(String),
+
+    /// IO error.
+    #[error("IO error: {0}")]
+    IoError(String),
+
+    /// Git error.
+    #[error("Git error: {0}")]
+    GitError(String),
+
+    /// HTTP error.
+    #[error("HTTP error: {0}")]
+    HttpError(String),
+
+    /// ConfigMap error.
+    #[error("ConfigMap error: {0}")]
+    ConfigMapError(String),
+
+    /// API error.
+    #[error("API error: {0}")]
+    ApiError(String),
 }
 
 /// Result type for operator operations.
