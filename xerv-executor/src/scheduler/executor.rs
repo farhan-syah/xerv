@@ -1,4 +1,7 @@
 //! Trace execution engine.
+//!
+//! This module provides the core execution engine for XERV traces.
+//! All public methods are instrumented with tracing spans for distributed tracing.
 
 use super::graph::FlowGraph;
 use crate::suspension::SuspensionStore;
@@ -6,6 +9,7 @@ use crate::trace::TraceState;
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::instrument;
 use xerv_core::arena::{Arena, ArenaConfig};
 use xerv_core::dispatch::{DispatchBackend, DispatchConfig, MemoryDispatch};
 use xerv_core::error::{Result, XervError};
@@ -169,6 +173,15 @@ impl Executor {
     }
 
     /// Start a new trace from a trigger event.
+    #[instrument(
+        skip(self, event),
+        fields(
+            otel.kind = "server",
+            trace_id = %event.trace_id,
+            trigger_id = %event.trigger_id,
+            pipeline_id = ?self.pipeline_id,
+        )
+    )]
     pub async fn start_trace(&self, event: TriggerEvent) -> Result<TraceId> {
         let trace_id = event.trace_id;
 
@@ -211,6 +224,14 @@ impl Executor {
     }
 
     /// Execute a trace to completion.
+    #[instrument(
+        skip(self),
+        fields(
+            otel.kind = "internal",
+            pipeline_id = ?self.pipeline_id,
+            node_count = %self.execution_order.len(),
+        )
+    )]
     pub async fn execute_trace(&self, trace_id: TraceId) -> Result<()> {
         // Get mutable access to trace state
         let mut trace = self
@@ -258,17 +279,30 @@ impl Executor {
             }
             self.log_collector.collect(start_event);
 
-            tracing::debug!(
+            // Create a span for this node execution for distributed tracing
+            let node_span = tracing::info_span!(
+                "node_execution",
+                otel.kind = "internal",
                 trace_id = %trace_id,
                 node_id = %node_id,
+                node_type = %node_info.name,
+                timeout_ms = %self.config.node_timeout_ms,
+            );
+
+            tracing::debug!(
+                parent: &node_span,
                 "Executing node"
             );
 
-            let result = tokio::time::timeout(
-                std::time::Duration::from_millis(self.config.node_timeout_ms),
-                node.execute(ctx, inputs),
-            )
-            .await;
+            let result = node_span
+                .in_scope(|| async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(self.config.node_timeout_ms),
+                        node.execute(ctx, inputs),
+                    )
+                    .await
+                })
+                .await;
 
             match result {
                 Ok(Ok(output)) => {
@@ -482,6 +516,7 @@ impl Executor {
     /// This will:
     /// 1. Notify all nodes of shutdown
     /// 2. Cleanup all active traces and their arena files
+    #[instrument(skip(self), fields(active_traces = %self.traces.len()))]
     pub async fn shutdown(&self) {
         // Notify all nodes of shutdown
         for node in self.nodes.values() {

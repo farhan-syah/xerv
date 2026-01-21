@@ -7,6 +7,7 @@ use super::Executor;
 use crate::suspension::{ResumeDecision, SuspendedTraceState};
 use crate::trace::TraceState;
 use std::collections::HashMap;
+use tracing::instrument;
 use xerv_core::arena::Arena;
 use xerv_core::error::{Result, XervError};
 use xerv_core::logging::{LogCategory, LogCollector, LogEvent};
@@ -20,6 +21,14 @@ impl Executor {
     /// This is called when a node returns `NodeOutput::Suspend`. The trace
     /// will be persisted to the suspension store and can be resumed via
     /// `resume_suspended_trace()`.
+    #[instrument(
+        skip(self, request),
+        fields(
+            otel.kind = "internal",
+            hook_id = %request.hook_id,
+            pending_size = %pending_size,
+        )
+    )]
     pub(crate) async fn suspend_trace(
         &self,
         trace_id: TraceId,
@@ -120,6 +129,14 @@ impl Executor {
     /// This is called when the external API receives a resume signal.
     /// The trace will be restored from the suspension store and execution
     /// will continue from the wait node.
+    #[instrument(
+        skip(self, decision),
+        fields(
+            otel.kind = "server",
+            hook_id = %hook_id,
+            decision_type = ?std::mem::discriminant(&decision),
+        )
+    )]
     pub async fn resume_suspended_trace(
         &self,
         hook_id: &str,
@@ -252,6 +269,15 @@ impl Executor {
     /// * `arena` - The arena loaded from disk
     /// * `recovery_state` - State reconstructed from WAL records
     /// * `resume_from` - The node to resume from (or None to continue from last completed)
+    #[instrument(
+        skip(self, arena, recovery_state),
+        fields(
+            otel.kind = "internal",
+            trace_id = %recovery_state.trace_id,
+            completed_nodes = %recovery_state.completed_nodes.len(),
+            resume_from = ?resume_from,
+        )
+    )]
     pub async fn resume_trace(
         &self,
         arena: xerv_core::arena::Arena,
