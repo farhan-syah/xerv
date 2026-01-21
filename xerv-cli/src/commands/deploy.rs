@@ -1,13 +1,9 @@
 //! Deploy command - deploy a flow from a YAML file.
 
 use anyhow::{Context, Result};
-use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::Request;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use std::fs;
 use std::path::Path;
+use xerv_client::Client;
 use xerv_executor::loader::{FlowLoader, LoaderError};
 
 /// Run the deploy command.
@@ -116,63 +112,23 @@ pub async fn run(file: &str, dry_run: bool, host: &str, port: u16) -> Result<()>
         return Ok(());
     }
 
-    // Deploy to server
+    // Deploy to server using xerv-client
     println!("Deploying to {}:{}...", host, port);
 
-    let url = format!("http://{}:{}/api/v1/pipelines", host, port);
+    let base_url = format!("http://{}:{}", host, port);
+    let client = Client::new(&base_url)?;
 
-    // Create HTTP client
-    let client = Client::builder(TokioExecutor::new()).build_http();
-
-    // Build the request
-    let req = Request::builder()
-        .method("POST")
-        .uri(&url)
-        .header("content-type", "application/x-yaml")
-        .header("accept", "application/json")
-        .body(Full::new(Bytes::from(yaml_content)))
-        .context("Failed to build HTTP request")?;
-
-    // Send the request
-    let resp = client
-        .request(req)
-        .await
-        .context(format!("Failed to connect to XERV server at {}", url))?;
-
-    // Read the response body
-    let status = resp.status();
-    let body_bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .context("Failed to read response body")?
-        .to_bytes();
-
-    // Check status
-    if !status.is_success() {
-        // Try to parse error from JSON
-        if let Ok(error_data) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-            let error_msg = error_data["error"].as_str().unwrap_or("Unknown error");
-            anyhow::bail!("Deployment failed ({}): {}", status.as_u16(), error_msg);
-        } else {
-            anyhow::bail!(
-                "Deployment failed ({}): {}",
-                status.as_u16(),
-                String::from_utf8_lossy(&body_bytes)
-            );
+    // Deploy the pipeline
+    match client.deploy_pipeline(&yaml_content).await {
+        Ok(pipeline) => {
+            println!("✓ Flow deployed successfully");
+            println!("  Pipeline ID: {}", pipeline.pipeline_id);
+            println!("  Status: {:?}", pipeline.status);
+        }
+        Err(e) => {
+            anyhow::bail!("Deployment failed: {}", e);
         }
     }
-
-    // Parse successful response
-    let data: serde_json::Value =
-        serde_json::from_slice(&body_bytes).context("Failed to parse JSON response")?;
-
-    let pipeline_id = data["pipeline_id"].as_str().unwrap_or("unknown");
-    let deployment_status = data["status"].as_str().unwrap_or("unknown");
-
-    println!("✓ Flow deployed successfully");
-    println!("  Pipeline ID: {}", pipeline_id);
-    println!("  Status: {}", deployment_status);
 
     Ok(())
 }

@@ -3,12 +3,7 @@
 //! Provides commands for querying and streaming logs from a running XERV server.
 
 use anyhow::{Context, Result};
-use bytes::Buf;
-use http_body_util::{BodyExt, Empty};
-use hyper::body::Bytes;
-use hyper::{Method, Request};
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
+use xerv_client::{Client, LogEntry, TraceId};
 
 /// Options for querying logs.
 #[derive(Debug, Default)]
@@ -95,104 +90,95 @@ impl<'a> LogQueryOptions<'a> {
 
 /// Query logs from the server.
 pub async fn query(options: LogQueryOptions<'_>) -> Result<()> {
-    let base_url = format!("{}:{}", options.host, options.port);
+    let base_url = format!("http://{}:{}", options.host, options.port);
+    let client = Client::new(&base_url)?;
 
-    // Build query parameters
-    let mut params = Vec::new();
-    if let Some(l) = options.level {
-        params.push(format!("level={}", l));
-    }
-    if let Some(tid) = options.trace_id {
-        params.push(format!("trace_id={}", tid));
-    }
-    if let Some(pid) = options.pipeline_id {
-        params.push(format!("pipeline_id={}", urlencoding::encode(pid)));
-    }
-    if let Some(nid) = options.node_id {
-        params.push(format!("node_id={}", nid));
-    }
-    if let Some(c) = options.contains {
-        params.push(format!("contains={}", urlencoding::encode(c)));
-    }
-    if let Some(lim) = options.limit {
-        params.push(format!("limit={}", lim));
-    }
-
-    let query_string = if params.is_empty() {
-        String::new()
+    // Parse trace_id if provided
+    let trace_id = if let Some(tid_str) = options.trace_id {
+        Some(TraceId::from_uuid(
+            tid_str
+                .parse::<uuid::Uuid>()
+                .context("Invalid trace ID format")?,
+        ))
     } else {
-        format!("?{}", params.join("&"))
+        None
     };
 
     if options.follow {
         // Poll for logs continuously
-        follow_logs(&base_url, &query_string).await
+        follow_logs(&client, trace_id, options.level, options.limit).await
     } else {
         // Single query
-        query_logs_once(&base_url, &query_string).await
+        query_logs_once(
+            &client,
+            options.level,
+            trace_id,
+            options.pipeline_id,
+            options.contains,
+            options.limit,
+        )
+        .await
     }
 }
 
 /// Query logs once and display.
-async fn query_logs_once(base_url: &str, query_string: &str) -> Result<()> {
-    let uri = format!("http://{}/api/v1/logs{}", base_url, query_string);
-    let response = fetch_json(&uri).await?;
-
-    let logs = response["logs"]
-        .as_array()
-        .context("Expected 'logs' array in response")?;
+async fn query_logs_once(
+    client: &Client,
+    level: Option<&str>,
+    trace_id: Option<TraceId>,
+    pipeline_id: Option<&str>,
+    contains: Option<&str>,
+    limit: Option<usize>,
+) -> Result<()> {
+    let logs = client
+        .query_logs(level, trace_id, pipeline_id, contains, limit)
+        .await
+        .context("Failed to query logs")?;
 
     if logs.is_empty() {
         println!("No logs found matching the filter.");
         return Ok(());
     }
 
-    for log in logs {
+    for log in &logs {
         print_log_entry(log);
     }
 
-    let count = response["count"].as_u64().unwrap_or(0);
-    let filter = response["filter"].as_str().unwrap_or("all events");
     println!();
-    println!("Showing {} logs (filter: {})", count, filter);
+    println!("Showing {} logs", logs.len());
 
     Ok(())
 }
 
 /// Follow logs continuously.
-async fn follow_logs(base_url: &str, query_string: &str) -> Result<()> {
+async fn follow_logs(
+    client: &Client,
+    _trace_id: Option<TraceId>,
+    _level: Option<&str>,
+    _limit: Option<usize>,
+) -> Result<()> {
     use std::collections::HashSet;
     use tokio::time::{Duration, sleep};
 
     let mut seen_ids: HashSet<u64> = HashSet::new();
-    let recent_uri = format!("http://{}/api/v1/logs/recent?limit=50", base_url);
 
     println!("Following logs (Ctrl+C to stop)...");
     println!();
 
     // First, show recent logs
-    if let Ok(response) = fetch_json(&recent_uri).await
-        && let Some(logs) = response["logs"].as_array()
-    {
+    if let Ok(logs) = client.get_recent_logs(50).await {
         for log in logs {
-            if let Some(id) = log["id"].as_u64() {
-                seen_ids.insert(id);
-            }
+            seen_ids.insert(log.id);
         }
     }
 
     loop {
-        let uri = format!("http://{}/api/v1/logs{}", base_url, query_string);
-        match fetch_json(&uri).await {
-            Ok(response) => {
-                if let Some(logs) = response["logs"].as_array() {
-                    for log in logs {
-                        if let Some(id) = log["id"].as_u64()
-                            && !seen_ids.contains(&id)
-                        {
-                            seen_ids.insert(id);
-                            print_log_entry(log);
-                        }
+        match client.query_logs(None, None, None, None, Some(100)).await {
+            Ok(logs) => {
+                for log in logs {
+                    if !seen_ids.contains(&log.id) {
+                        seen_ids.insert(log.id);
+                        print_log_entry(&log);
                     }
                 }
             }
@@ -207,69 +193,74 @@ async fn follow_logs(base_url: &str, query_string: &str) -> Result<()> {
 
 /// Get logs for a specific trace.
 pub async fn by_trace(host: &str, port: u16, trace_id: &str) -> Result<()> {
-    let uri = format!("http://{}:{}/api/v1/logs/by-trace/{}", host, port, trace_id);
+    let base_url = format!("http://{}:{}", host, port);
+    let client = Client::new(&base_url)?;
 
-    let response = fetch_json(&uri).await?;
+    let trace_id = TraceId::from_uuid(
+        trace_id
+            .parse::<uuid::Uuid>()
+            .context("Invalid trace ID format")?,
+    );
 
-    let logs = response["logs"]
-        .as_array()
-        .context("Expected 'logs' array in response")?;
+    let logs = client
+        .get_trace_logs(trace_id)
+        .await
+        .context("Failed to fetch trace logs")?;
 
     if logs.is_empty() {
-        println!("No logs found for trace: {}", trace_id);
+        println!("No logs found for trace: {}", trace_id.as_uuid());
         return Ok(());
     }
 
-    println!("Logs for trace: {}", trace_id);
+    println!("Logs for trace: {}", trace_id.as_uuid());
     println!("{:-<80}", "");
     println!();
 
-    for log in logs {
+    for log in &logs {
         print_log_entry(log);
     }
 
-    let count = response["count"].as_u64().unwrap_or(0);
     println!();
-    println!("Total: {} logs", count);
+    println!("Total: {} logs", logs.len());
 
     Ok(())
 }
 
 /// Get log statistics.
 pub async fn stats(host: &str, port: u16) -> Result<()> {
-    let uri = format!("http://{}:{}/api/v1/logs/stats", host, port);
-    let response = fetch_json(&uri).await?;
+    let base_url = format!("http://{}:{}", host, port);
+    let client = Client::new(&base_url)?;
+
+    let stats = client
+        .get_log_stats()
+        .await
+        .context("Failed to fetch log statistics")?;
 
     println!("Log Statistics");
     println!("{:-<40}", "");
 
-    let total = response["total"].as_u64().unwrap_or(0);
-    let capacity = response["capacity"].as_u64().unwrap_or(0);
-
-    println!("  Total Events: {}", total);
-    println!("  Buffer Capacity: {}", capacity);
-    if capacity > 0 {
+    println!("  Total Events: {}", stats.total);
+    println!("  Buffer Capacity: {}", stats.capacity);
+    if stats.capacity > 0 {
         println!(
             "  Buffer Usage: {:.1}%",
-            (total as f64 / capacity as f64) * 100.0
+            (stats.total as f64 / stats.capacity as f64) * 100.0
         );
     }
     println!();
 
-    if let Some(by_level) = response["by_level"].as_object() {
-        println!("  By Level:");
-        let levels = ["trace", "debug", "info", "warn", "error"];
-        for level in levels {
-            let count = by_level.get(level).and_then(|v| v.as_u64()).unwrap_or(0);
-            if count > 0 || total == 0 {
-                let bar_len = if total > 0 {
-                    ((count as f64 / total as f64) * 20.0) as usize
-                } else {
-                    0
-                };
-                let bar = "█".repeat(bar_len);
-                println!("    {:>5}: {:>5} {}", level, count, bar);
-            }
+    println!("  By Level:");
+    let levels = ["trace", "debug", "info", "warn", "error"];
+    for level in levels {
+        let count = stats.by_level.get(level).copied().unwrap_or(0);
+        if count > 0 || stats.total == 0 {
+            let bar_len = if stats.total > 0 {
+                ((count as f64 / stats.total as f64) * 20.0) as usize
+            } else {
+                0
+            };
+            let bar = "█".repeat(bar_len);
+            println!("    {:>5}: {:>5} {}", level, count, bar);
         }
     }
 
@@ -278,75 +269,25 @@ pub async fn stats(host: &str, port: u16) -> Result<()> {
 
 /// Clear all logs on the server.
 pub async fn clear(host: &str, port: u16) -> Result<()> {
-    let uri: hyper::Uri = format!("http://{}:{}/api/v1/logs", host, port)
-        .parse()
-        .context("Invalid URI")?;
+    let base_url = format!("http://{}:{}", host, port);
+    let client = Client::new(&base_url)?;
 
-    let client: Client<_, Empty<Bytes>> = Client::builder(TokioExecutor::new()).build_http();
+    client.clear_logs().await.context("Failed to clear logs")?;
 
-    let req = Request::builder()
-        .method(Method::DELETE)
-        .uri(uri)
-        .body(Empty::new())
-        .context("Failed to build request")?;
-
-    let response = client
-        .request(req)
-        .await
-        .context("Failed to connect to server")?;
-
-    if response.status().is_success() {
-        println!("Logs cleared successfully.");
-    } else {
-        let status = response.status();
-        let body = response.collect().await?.to_bytes();
-        let body_str = String::from_utf8_lossy(&body);
-        anyhow::bail!("Failed to clear logs: {} - {}", status, body_str);
-    }
+    println!("Logs cleared successfully.");
 
     Ok(())
 }
 
-/// Fetch JSON from a URL.
-async fn fetch_json(uri: &str) -> Result<serde_json::Value> {
-    let uri: hyper::Uri = uri.parse().context("Invalid URI")?;
-
-    let client: Client<_, Empty<Bytes>> = Client::builder(TokioExecutor::new()).build_http();
-
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri(uri)
-        .body(Empty::new())
-        .context("Failed to build request")?;
-
-    let response = client
-        .request(req)
-        .await
-        .context("Failed to connect to server")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.collect().await?.to_bytes();
-        let body_str = String::from_utf8_lossy(&body);
-        anyhow::bail!("Server returned error: {} - {}", status, body_str);
-    }
-
-    let body = response.collect().await?.aggregate();
-    let json: serde_json::Value =
-        serde_json::from_reader(body.reader()).context("Failed to parse JSON response")?;
-
-    Ok(json)
-}
-
 /// Print a formatted log entry.
-fn print_log_entry(log: &serde_json::Value) {
-    let timestamp = log["timestamp"].as_str().unwrap_or("-");
-    let level = log["level"].as_str().unwrap_or("?");
-    let category = log["category"].as_str().unwrap_or("?");
-    let message = log["message"].as_str().unwrap_or("");
+fn print_log_entry(log: &LogEntry) {
+    let timestamp = &log.timestamp;
+    let level = &log.level;
+    let category = &log.category;
+    let message = &log.message;
 
     // Color based on level
-    let level_colored = match level {
+    let level_colored = match level.as_str() {
         "trace" => format!("\x1b[90m{}\x1b[0m", level.to_uppercase()),
         "debug" => format!("\x1b[36m{}\x1b[0m", level.to_uppercase()),
         "info" => format!("\x1b[32m{}\x1b[0m", level.to_uppercase()),
@@ -357,13 +298,14 @@ fn print_log_entry(log: &serde_json::Value) {
 
     // Build context string
     let mut context_parts = Vec::new();
-    if let Some(trace_id) = log["trace_id"].as_str() {
-        context_parts.push(format!("trace={}", &trace_id[..8.min(trace_id.len())]));
+    if let Some(ref trace_id) = log.trace_id {
+        let trace_str = trace_id.as_uuid().to_string();
+        context_parts.push(format!("trace={}", &trace_str[..8.min(trace_str.len())]));
     }
-    if let Some(node_id) = log["node_id"].as_u64() {
-        context_parts.push(format!("node={}", node_id));
+    if let Some(node_id) = log.node_id {
+        context_parts.push(format!("node={}", node_id.as_u32()));
     }
-    if let Some(pipeline_id) = log["pipeline_id"].as_str() {
+    if let Some(ref pipeline_id) = log.pipeline_id {
         context_parts.push(format!("pipeline={}", pipeline_id));
     }
 
@@ -379,56 +321,36 @@ fn print_log_entry(log: &serde_json::Value) {
     );
 
     // Print fields if present
-    if let Some(fields) = log["fields"].as_object()
-        && !fields.is_empty()
-    {
-        let field_strs: Vec<String> = fields.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+    if !log.fields.is_empty() {
+        let field_strs: Vec<String> = log
+            .fields
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
         println!("         {{{}}}", field_strs.join(", "));
-    }
-}
-
-/// URL encode a string.
-mod urlencoding {
-    pub fn encode(s: &str) -> String {
-        let mut result = String::with_capacity(s.len() * 3);
-        for byte in s.bytes() {
-            match byte {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    result.push(byte as char);
-                }
-                _ => {
-                    result.push('%');
-                    result.push_str(&format!("{:02X}", byte));
-                }
-            }
-        }
-        result
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xerv_client::NodeId;
 
     #[test]
     fn test_print_log_entry() {
-        let log = serde_json::json!({
-            "timestamp": "2024-01-15T10:30:00.000Z",
-            "level": "info",
-            "category": "node",
-            "message": "Test message",
-            "trace_id": "550e8400-e29b-41d4-a716-446655440000",
-            "node_id": 42
-        });
+        let log = LogEntry {
+            id: 1,
+            timestamp: "2024-01-15T10:30:00.000Z".to_string(),
+            level: "info".to_string(),
+            category: "node".to_string(),
+            message: "Test message".to_string(),
+            trace_id: Some(TraceId::from_uuid(uuid::Uuid::new_v4())),
+            node_id: Some(NodeId::new(42)),
+            pipeline_id: Some("test-pipeline".to_string()),
+            fields: serde_json::Map::new(),
+        };
 
         // Just verify it doesn't panic
         print_log_entry(&log);
-    }
-
-    #[test]
-    fn test_url_encoding() {
-        assert_eq!(urlencoding::encode("hello"), "hello");
-        assert_eq!(urlencoding::encode("hello world"), "hello%20world");
-        assert_eq!(urlencoding::encode("a=b&c=d"), "a%3Db%26c%3Dd");
     }
 }
