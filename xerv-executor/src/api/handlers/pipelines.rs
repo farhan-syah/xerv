@@ -6,6 +6,7 @@ use crate::api::response;
 use crate::api::state::AppState;
 use crate::loader::FlowLoader;
 use crate::pipeline::PipelineBuilder;
+use crate::validation::pipeline::{validate_for_deployment, validate_for_editing};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use xerv_core::error::XervError;
+use xerv_core::flow::{FlowDefinition, ValidationLimits};
 use xerv_core::traits::{PipelineConfig, PipelineSettings};
 use xerv_core::types::PipelineId;
 
@@ -65,16 +67,14 @@ pub async fn list(state: Arc<AppState>) -> Response<Full<Bytes>> {
     let mut pipelines = Vec::with_capacity(pipeline_ids.len());
     for id in &pipeline_ids {
         if let Some(pipeline) = state.controller.get(id) {
-            let metrics = pipeline.metrics();
+            let pipeline_id = &pipeline.id;
             pipelines.push(serde_json::json!({
-                "id": id,
-                "state": format!("{:?}", pipeline.state().await).to_lowercase(),
-                "metrics": {
-                    "traces_started": metrics.traces_started.load(Ordering::Relaxed),
-                    "traces_completed": metrics.traces_completed.load(Ordering::Relaxed),
-                    "traces_failed": metrics.traces_failed.load(Ordering::Relaxed),
-                    "traces_active": metrics.traces_active.load(Ordering::Relaxed)
-                }
+                "pipeline_id": pipeline_id.to_string(),
+                "name": pipeline_id.name(),
+                "version": pipeline_id.version().to_string(),
+                "status": format!("{:?}", pipeline.state().await).to_lowercase(),
+                "trigger_count": 0,
+                "node_count": 0
             }));
         }
     }
@@ -100,9 +100,7 @@ pub async fn create(req: Request<Incoming>, state: Arc<AppState>) -> Response<Fu
     // Load and validate the flow
     let loaded = match FlowLoader::from_yaml(&yaml) {
         Ok(f) => f,
-        Err(e) => {
-            return ApiError::bad_request("E801", e.to_string()).into_response();
-        }
+        Err(e) => return ApiError::bad_request("E801", e.to_string()).into_response(),
     };
 
     // Create pipeline ID with properly parsed version
@@ -134,10 +132,14 @@ pub async fn create(req: Request<Incoming>, state: Arc<AppState>) -> Response<Fu
         drain_grace_period: Duration::from_millis(flow_settings.drain_grace_period_ms),
     };
 
+    // Store the original definition for later retrieval
+    let definition = loaded.definition.clone();
+
     // Build the pipeline
     let pipeline = match PipelineBuilder::new(pipeline_id.clone(), config)
         .with_settings(settings)
         .with_graph(loaded.graph)
+        .with_definition(definition)
         .build()
     {
         Ok(p) => p,
@@ -166,9 +168,58 @@ pub async fn create(req: Request<Incoming>, state: Arc<AppState>) -> Response<Fu
     response::created(&body)
 }
 
+/// POST /api/v1/pipelines/validate
+///
+/// Validate a pipeline definition without deploying.
+pub async fn validate(req: Request<Incoming>, _state: Arc<AppState>) -> Response<Full<Bytes>> {
+    let yaml = match request::read_body_string(req).await {
+        Ok(y) => y,
+        Err(e) => return e.into_response(),
+    };
+
+    let limits = ValidationLimits::default();
+    let flow = match FlowDefinition::from_yaml_with_limits(&yaml, &limits) {
+        Ok(f) => f,
+        Err(e) => return ApiError::bad_request("E801", e.to_string()).into_response(),
+    };
+    let report = validate_for_editing(&flow, &limits);
+    response::ok(&report)
+}
+
+/// POST /api/v1/pipelines/{id}/deploy/validate
+///
+/// Validate a pipeline definition for deployment.
+pub async fn validate_deploy(
+    req: Request<Incoming>,
+    _state: Arc<AppState>,
+    pipeline_id: &str,
+) -> Response<Full<Bytes>> {
+    let yaml = match request::read_body_string(req).await {
+        Ok(y) => y,
+        Err(e) => return e.into_response(),
+    };
+
+    let limits = ValidationLimits::default();
+    let flow = match FlowDefinition::from_yaml_with_limits(&yaml, &limits) {
+        Ok(f) => f,
+        Err(e) => return ApiError::bad_request("E801", e.to_string()).into_response(),
+    };
+    let report = validate_for_deployment(&flow, &limits);
+
+    tracing::info!(
+        pipeline_id = %pipeline_id,
+        valid = report.valid,
+        errors = report.errors.len(),
+        warnings = report.warnings.len(),
+        "Deployment validation completed"
+    );
+
+    response::ok(&report)
+}
+
 /// GET /api/v1/pipelines/{id}
 ///
-/// Get pipeline details.
+/// Get pipeline definition as YAML.
 pub async fn get(state: Arc<AppState>, pipeline_id: &str) -> Response<Full<Bytes>> {
     let pipeline = match state.controller.get(pipeline_id) {
         Some(p) => p,
@@ -180,19 +231,101 @@ pub async fn get(state: Arc<AppState>, pipeline_id: &str) -> Response<Full<Bytes
         }
     };
 
-    let metrics = pipeline.metrics();
-    let pipeline_state = pipeline.state().await;
+    // Serialize the flow definition back to YAML
+    let definition = pipeline.definition();
+    match serde_yaml::to_string(definition) {
+        Ok(yaml) => response::ok_yaml(yaml),
+        Err(e) => {
+            ApiError::internal("E804", format!("Failed to serialize YAML: {}", e)).into_response()
+        }
+    }
+}
+
+/// PUT /api/v1/pipelines/{id}
+///
+/// Update an existing pipeline from YAML.
+pub async fn update(
+    req: Request<Incoming>,
+    state: Arc<AppState>,
+    pipeline_id: &str,
+) -> Response<Full<Bytes>> {
+    // Read YAML body
+    let yaml = match request::read_body_string(req).await {
+        Ok(y) => y,
+        Err(e) => return e.into_response(),
+    };
+
+    // Load and validate the flow
+    let loaded = match FlowLoader::from_yaml(&yaml) {
+        Ok(f) => f,
+        Err(e) => return ApiError::bad_request("E801", e.to_string()).into_response(),
+    };
+
+    // Verify the pipeline exists
+    if state.controller.get(pipeline_id).is_none() {
+        return ApiError::from(XervError::PipelineNotFound {
+            pipeline_id: pipeline_id.to_string(),
+        })
+        .into_response();
+    }
+
+    // Remove the old pipeline
+    if let Err(e) = state.controller.remove(pipeline_id).await {
+        return ApiError::from(e).into_response();
+    }
+
+    // Create new pipeline ID (in case version changed)
+    let name = loaded.name().to_string();
+    let version_str = loaded.version().to_string();
+    let version_num = parse_version_number(&version_str);
+    let new_pipeline_id = PipelineId::new(&name, version_num);
+
+    // Build pipeline config
+    let config = PipelineConfig::new(new_pipeline_id.to_string());
+
+    // Convert FlowSettings to PipelineSettings
+    let flow_settings = &loaded.settings;
+    let settings = PipelineSettings {
+        max_concurrent_executions: flow_settings.max_concurrent_executions,
+        execution_timeout: Duration::from_millis(flow_settings.execution_timeout_ms),
+        circuit_breaker_threshold: flow_settings.circuit_breaker_threshold,
+        circuit_breaker_window: Duration::from_millis(flow_settings.circuit_breaker_window_ms),
+        max_concurrent_versions: flow_settings.max_concurrent_versions,
+        drain_timeout: Duration::from_millis(flow_settings.drain_timeout_ms),
+        drain_grace_period: Duration::from_millis(flow_settings.drain_grace_period_ms),
+    };
+
+    // Store the original definition
+    let definition = loaded.definition.clone();
+
+    // Build the new pipeline
+    let pipeline = match PipelineBuilder::new(new_pipeline_id.clone(), config)
+        .with_settings(settings)
+        .with_graph(loaded.graph)
+        .with_definition(definition)
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            return ApiError::from(e).into_response();
+        }
+    };
+
+    // Deploy the updated pipeline
+    if let Err(e) = state.controller.deploy(pipeline) {
+        return ApiError::from(e).into_response();
+    }
+
+    tracing::info!(
+        pipeline_id = %new_pipeline_id,
+        "Pipeline updated"
+    );
 
     let body = serde_json::json!({
-        "pipeline_id": pipeline_id,
-        "state": format!("{:?}", pipeline_state).to_lowercase(),
-        "metrics": {
-            "traces_started": metrics.traces_started.load(Ordering::Relaxed),
-            "traces_completed": metrics.traces_completed.load(Ordering::Relaxed),
-            "traces_failed": metrics.traces_failed.load(Ordering::Relaxed),
-            "traces_active": metrics.traces_active.load(Ordering::Relaxed),
-            "error_rate": metrics.error_rate()
-        }
+        "pipeline_id": new_pipeline_id.to_string(),
+        "name": name,
+        "version": version_str,
+        "status": "deployed"
     });
 
     response::ok(&body)

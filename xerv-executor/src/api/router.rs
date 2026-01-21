@@ -10,6 +10,7 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response};
 use std::convert::Infallible;
+use std::path::Path;
 use std::sync::Arc;
 use xerv_core::auth::{AuthContext, AuthMiddleware, HeaderAccess};
 
@@ -38,6 +39,30 @@ pub async fn route(
 
     tracing::debug!(method = %method, path = %path, "Routing request");
 
+    // Clone origin header to avoid borrowing req
+    let origin = req
+        .headers()
+        .get("Origin")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    if method == Method::OPTIONS {
+        let resp = response::preflight();
+        return Ok(response::apply_cors_headers(resp, origin.as_deref()));
+    }
+
+    // Serve static assets for non-API paths
+    if !path.starts_with(API_PREFIX) {
+        let resp = serve_static(&path);
+        return Ok(response::apply_cors_headers(resp, origin.as_deref()));
+    }
+
+    if let Some(ip) = req.extensions().get::<std::net::IpAddr>() {
+        if !state.rate_limiter.allow(*ip) {
+            return Ok(response::too_many_requests("Rate limit exceeded"));
+        }
+    }
+
     // Authenticate the request
     let headers = HyperHeaders(req.headers());
     let auth_ctx = match AuthMiddleware::authenticate(&state.auth_config, &path, &headers) {
@@ -56,6 +81,8 @@ pub async fn route(
         (Method::GET, "/health") => handlers::health::get_health(state).await,
         (Method::GET, "/status") => handlers::health::get_status(state).await,
         (Method::GET, "/metrics") => handlers::metrics::get_metrics(state).await,
+        (Method::GET, "/capabilities") => handlers::capabilities::get(state).await,
+        (Method::GET, "/nodes/metadata") => handlers::nodes::metadata().await,
 
         // Pipeline endpoints
         (Method::GET, "/pipelines") => {
@@ -70,6 +97,12 @@ pub async fn route(
             }
             handlers::pipelines::create(req, state).await
         }
+        (Method::POST, "/pipelines/validate") => {
+            if let Err(r) = require_scope(&auth_ctx, xerv_core::auth::AuthScope::PipelineWrite) {
+                return Ok(r);
+            }
+            handlers::pipelines::validate(req, state).await
+        }
 
         // Pipeline subpaths
         (_, p) if p.starts_with("/pipelines/") => {
@@ -81,7 +114,13 @@ pub async fn route(
             if let Err(r) = require_scope(&auth_ctx, xerv_core::auth::AuthScope::TraceRead) {
                 return Ok(r);
             }
-            handlers::traces::list(state).await
+            handlers::traces::list(req.uri().query(), state).await
+        }
+        (Method::POST, "/traces") => {
+            if let Err(r) = require_scope(&auth_ctx, xerv_core::auth::AuthScope::TraceWrite) {
+                return Ok(r);
+            }
+            handlers::traces::create(req, state).await
         }
         (_, p) if p.starts_with("/traces/") => route_trace_subpath(req, state, p, &auth_ctx).await,
 
@@ -125,7 +164,47 @@ pub async fn route(
         _ => response::not_found(),
     };
 
-    Ok(response)
+    Ok(response::apply_cors_headers(response, origin.as_deref()))
+}
+
+fn serve_static(path: &str) -> Response<Full<Bytes>> {
+    let dist_dir = Path::new("./web/dist");
+    let rel = path.trim_start_matches('/');
+    let rel = if rel.is_empty() { "index.html" } else { rel };
+
+    if rel.contains("..") {
+        return response::not_found();
+    }
+
+    let mut file_path = dist_dir.join(rel);
+    if file_path.is_dir() {
+        file_path = file_path.join("index.html");
+    }
+
+    let content = std::fs::read(&file_path).or_else(|_| std::fs::read(dist_dir.join("index.html")));
+
+    match content {
+        Ok(bytes) => {
+            let content_type = content_type_for_path(&file_path);
+            response::bytes_response(hyper::StatusCode::OK, content_type, Bytes::from(bytes))
+        }
+        Err(_) => response::not_found(),
+    }
+}
+
+fn content_type_for_path(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" => "application/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "map" => "application/json; charset=utf-8",
+        "wasm" => "application/wasm",
+        "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "ico" => "image/x-icon",
+        _ => "application/octet-stream",
+    }
 }
 
 /// Helper to check scope and return forbidden response if not authorized.
@@ -173,6 +252,14 @@ async fn route_pipeline_subpath(
             handlers::pipelines::get(state, pipeline_id).await
         }
 
+        // PUT /pipelines/{id}
+        (&Method::PUT, None) => {
+            if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::PipelineWrite) {
+                return r;
+            }
+            handlers::pipelines::update(req, state, pipeline_id).await
+        }
+
         // DELETE /pipelines/{id}
         (&Method::DELETE, None) => {
             if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::PipelineWrite) {
@@ -187,6 +274,14 @@ async fn route_pipeline_subpath(
                 return r;
             }
             handlers::pipelines::start(state, pipeline_id).await
+        }
+
+        // POST /pipelines/{id}/deploy/validate
+        (&Method::POST, Some("deploy/validate")) => {
+            if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::PipelineWrite) {
+                return r;
+            }
+            handlers::pipelines::validate_deploy(req, state, pipeline_id).await
         }
 
         // POST /pipelines/{id}/pause
@@ -322,23 +417,61 @@ async fn route_trigger_subpath(
 
 /// Route requests under /traces/{trace_id}
 async fn route_trace_subpath(
-    _req: Request<Incoming>,
+    req: Request<Incoming>,
     state: Arc<AppState>,
     path: &str,
     auth_ctx: &AuthContext,
 ) -> Response<Full<Bytes>> {
-    // Parse /traces/{trace_id}
-    let trace_id = path.strip_prefix("/traces/").unwrap_or("");
+    // Parse /traces/{trace_id} or /traces/{trace_id}/stream
+    let trace_path = path.strip_prefix("/traces/").unwrap_or("");
+    let (trace_id, subpath) = match trace_path.split_once('/') {
+        Some((id, rest)) => (id, Some(rest)),
+        None => (trace_path, None),
+    };
 
     if trace_id.is_empty() {
         return response::not_found();
     }
 
-    if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::TraceRead) {
-        return r;
+    match (req.method(), subpath) {
+        (&Method::GET, None) => {
+            if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::TraceRead) {
+                return r;
+            }
+            handlers::traces::get(state, trace_id).await
+        }
+        (&Method::GET, Some("stream")) => {
+            if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::TraceRead) {
+                return r;
+            }
+            handlers::traces::stream(state, trace_id).await
+        }
+        (&Method::GET, Some("logs")) => {
+            if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::TraceRead) {
+                return r;
+            }
+            handlers::traces::logs_by_trace(state, trace_id).await
+        }
+        (&Method::POST, Some("suspend")) => {
+            if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::TraceWrite) {
+                return r;
+            }
+            handlers::traces::suspend(state, trace_id).await
+        }
+        (&Method::POST, Some("resume")) => {
+            if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::TraceResume) {
+                return r;
+            }
+            handlers::traces::resume(state, trace_id).await
+        }
+        (&Method::POST, Some("cancel")) => {
+            if let Err(r) = require_scope(auth_ctx, xerv_core::auth::AuthScope::TraceWrite) {
+                return r;
+            }
+            handlers::traces::cancel(state, trace_id).await
+        }
+        _ => response::method_not_allowed(&["GET", "POST"]),
     }
-
-    handlers::traces::get(state, trace_id).await
 }
 
 /// Route requests under /logs/...
