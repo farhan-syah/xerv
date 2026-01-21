@@ -30,6 +30,14 @@ enum Commands {
         /// Run in dry-run mode (validate only)
         #[arg(long)]
         dry_run: bool,
+
+        /// Server host
+        #[arg(short = 'H', long, default_value = "localhost")]
+        host: String,
+
+        /// Server port
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
     },
 
     /// Run a flow in development mode with hot-reloading
@@ -67,6 +75,14 @@ enum Commands {
         /// Show all pipelines (including stopped)
         #[arg(short, long)]
         all: bool,
+
+        /// Server host
+        #[arg(short = 'H', long, default_value = "localhost")]
+        host: String,
+
+        /// Server port
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
     },
 
     /// Start the XERV API server
@@ -249,8 +265,9 @@ fn setup_logging(verbosity: u8) -> Result<xerv_executor::observability::TracingG
 
     // Check for explicit log format override, otherwise auto-detect
     let log_format = std::env::var("XERV_LOG_FORMAT")
-        .map(|s| LogFormat::from_str(&s))
-        .unwrap_or_else(|_| {
+        .ok()
+        .and_then(|s| s.parse::<LogFormat>().ok())
+        .unwrap_or_else(|| {
             if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
                 LogFormat::Pretty
             } else {
@@ -275,12 +292,17 @@ async fn main() -> Result<()> {
     let _tracing_guard = setup_logging(cli.verbose)?;
 
     match cli.command {
-        Commands::Deploy { file, dry_run } => commands::deploy::run(&file, dry_run).await,
+        Commands::Deploy {
+            file,
+            dry_run,
+            host,
+            port,
+        } => commands::deploy::run(&file, dry_run, &host, port).await,
         Commands::Dev { file, port } => commands::dev::run(&file, port).await,
         Commands::Inspect { trace, detailed } => commands::inspect::run(&trace, detailed).await,
         Commands::Validate { file } => commands::validate::run(&file).await,
         Commands::Version => commands::version::run(),
-        Commands::List { all } => commands::list::run(all).await,
+        Commands::List { all, host, port } => commands::list::run(all, &host, port).await,
         Commands::Serve { host, port } => commands::serve::run(&host, port).await,
         Commands::Schema { action } => match action {
             SchemaAction::List { registry } => commands::schema::list(registry.as_deref()).await,
