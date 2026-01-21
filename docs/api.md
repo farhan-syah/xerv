@@ -370,6 +370,64 @@ GET /traces/{trace_id}/logs/stream
 {"timestamp": "...", "level": "info", "message": "..."}
 ```
 
+## Metrics Endpoint
+
+XERV exposes Prometheus-compatible metrics for monitoring and scaling.
+
+### Get Prometheus metrics
+
+```
+GET /metrics
+```
+
+**Response (200 OK):** Prometheus text format
+
+```prometheus
+# HELP xerv_active_traces Number of active traces
+# TYPE xerv_active_traces gauge
+xerv_active_traces{cluster="node1",pipeline="order-processing"} 12
+
+# HELP xerv_pending_traces Number of pending traces
+# TYPE xerv_pending_traces gauge
+xerv_pending_traces{cluster="node1",pipeline="order-processing"} 5
+
+# HELP xerv_node_execution_seconds Node execution duration
+# TYPE xerv_node_execution_seconds histogram
+xerv_node_execution_seconds_bucket{node_type="fraud_check",le="0.001"} 145
+xerv_node_execution_seconds_bucket{node_type="fraud_check",le="0.01"} 312
+```
+
+**Key metrics for concurrency monitoring:**
+
+- `xerv_active_traces` - Traces currently executing (gauge by pipeline)
+- `xerv_pending_traces` - Traces waiting to be processed (gauge by pipeline)
+- `xerv_node_execution_seconds` - Individual node execution time (histogram by node type)
+- `xerv_trace_duration_seconds` - Total trace latency (histogram by pipeline)
+- `xerv_dispatch_queue_depth` - Queue depth for dispatch backend (global gauge)
+
+**Using with Kubernetes HPA:**
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: xerv-executor
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: xerv-executor
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Pods
+    pods:
+      metric:
+        name: xerv_active_traces
+      target:
+        averageValue: "50"  # Scale when avg active traces > 50
+```
+
 ## Rate Limiting
 
 The API does not enforce rate limits by default. Configure limits in `ServerConfig`:

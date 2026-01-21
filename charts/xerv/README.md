@@ -62,6 +62,14 @@ helm install xerv xerv/xerv \
 | `server.apiPort`  | HTTP API port    | `8080`  |
 | `server.grpcPort` | gRPC port (Raft) | `5000`  |
 
+### Concurrency & Performance
+
+| Parameter                      | Description                           | Default |
+| ------------------------------ | ------------------------------------- | ------- |
+| `executor.maxConcurrentNodes`  | Max concurrent nodes per trace        | `16`    |
+| `executor.maxConcurrentTraces` | Max concurrent traces                 | `100`   |
+| `executor.nodeTimeoutMs`       | Node execution timeout (milliseconds) | `30000` |
+
 ### Storage (Raft backend)
 
 | Parameter            | Description   | Default         |

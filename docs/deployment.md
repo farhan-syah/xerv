@@ -270,29 +270,29 @@ spec:
 
 ### Common
 
-| Variable                    | Default     | Description                                |
-| --------------------------- | ----------- | ------------------------------------------ |
-| `XERV_DISPATCH_BACKEND`     | `memory`    | Backend: `memory`, `raft`, `redis`, `nats` |
-| `XERV_API_PORT`             | `8080`      | HTTP API port                              |
-| `XERV_DATA_DIR`             | `/tmp/xerv` | Base directory for arena and WAL files     |
-| `XERV_METRICS_ENABLED`      | `true`      | Enable Prometheus metrics                  |
-| `RUST_LOG`                  | `xerv=info` | Log level                                  |
+| Variable                | Default     | Description                                |
+| ----------------------- | ----------- | ------------------------------------------ |
+| `XERV_DISPATCH_BACKEND` | `memory`    | Backend: `memory`, `raft`, `redis`, `nats` |
+| `XERV_API_PORT`         | `8080`      | HTTP API port                              |
+| `XERV_DATA_DIR`         | `/tmp/xerv` | Base directory for arena and WAL files     |
+| `XERV_METRICS_ENABLED`  | `true`      | Enable Prometheus metrics                  |
+| `RUST_LOG`              | `xerv=info` | Log level                                  |
 
 ### Storage and Durability
 
-| Variable                    | Default     | Description                                          |
-| --------------------------- | ----------- | ---------------------------------------------------- |
-| `XERV_ARENA_SYNC`           | `false`     | Enable fsync on arena writes (slower but safer)      |
-| `XERV_WAL_SYNC`             | `true`      | Enable fsync on WAL writes (recommended)             |
-| `XERV_WAL_GROUP_COMMIT`     | `false`     | Enable group commit for higher WAL throughput        |
+| Variable                | Default | Description                                     |
+| ----------------------- | ------- | ----------------------------------------------- |
+| `XERV_ARENA_SYNC`       | `false` | Enable fsync on arena writes (slower but safer) |
+| `XERV_WAL_SYNC`         | `true`  | Enable fsync on WAL writes (recommended)        |
+| `XERV_WAL_GROUP_COMMIT` | `false` | Enable group commit for higher WAL throughput   |
 
 ### Performance Tuning
 
-| Variable                    | Default | Description                                          |
-| --------------------------- | ------- | ---------------------------------------------------- |
-| `XERV_MAX_CONCURRENT_NODES` | `16`    | Maximum concurrent node executions per trace         |
-| `XERV_MAX_CONCURRENT_TRACES`| `100`   | Maximum concurrent traces                            |
-| `XERV_NODE_TIMEOUT_MS`      | `30000` | Node execution timeout in milliseconds               |
+| Variable                     | Default | Description                                  |
+| ---------------------------- | ------- | -------------------------------------------- |
+| `XERV_MAX_CONCURRENT_NODES`  | `16`    | Maximum concurrent node executions per trace |
+| `XERV_MAX_CONCURRENT_TRACES` | `100`   | Maximum concurrent traces                    |
+| `XERV_NODE_TIMEOUT_MS`       | `30000` | Node execution timeout in milliseconds       |
 
 ### Production Configuration
 
@@ -563,6 +563,75 @@ redis-cli --uri redis://redis-cluster:6379 BGSAVE
 - Similar to Redis
 - Additional tuning: JetStream batch size, pull interval
 - Peak: 50k+ traces/sec with sufficient workers
+
+## Concurrency Tuning
+
+XERV uses a **work-stealing scheduler** with semaphore-based backpressure to control concurrent node execution. Fine-tune `XERV_MAX_CONCURRENT_NODES` based on your deployment:
+
+### Recommended Settings
+
+| Profile              | Value | Notes                                                 |
+| -------------------- | ----- | ----------------------------------------------------- |
+| **Development**      | 4-8   | Low resource overhead, good for debugging             |
+| **Standard Server**  | 16    | Default; balances parallelism with memory usage       |
+| **High-Performance** | 32-64 | For DAGs with many parallelizable nodes               |
+| **Edge Device**      | 1-4   | Minimize memory/CPU footprint on constrained hardware |
+
+### Tuning Guidelines
+
+**Monitor these metrics:**
+
+- `xerv_active_traces` - Number of traces currently executing
+- `xerv_node_execution_seconds` - Individual node latency
+- `xerv_dispatch_queue_depth` - Pending trace backlog
+
+**Increase `max_concurrent_nodes` if:**
+
+- Node execution latency is low (< 10ms per node)
+- DAG has many parallelizable stages (e.g., scatter-gather patterns)
+- Available memory/CPU permits higher concurrency
+
+**Decrease `max_concurrent_nodes` if:**
+
+- Memory usage is high
+- CPU utilization is at 100%
+- External service rate limits are being hit
+- Individual nodes take > 100ms to complete
+
+### Example Configuration (Kubernetes)
+
+```yaml
+# Deploy with tuned concurrency
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xerv-config
+data:
+  XERV_MAX_CONCURRENT_NODES: "32"
+  XERV_MAX_CONCURRENT_TRACES: "100"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xerv-executor
+spec:
+  replicas: 5
+  template:
+    spec:
+      containers:
+        - name: xerv
+          envFrom:
+            - configMapRef:
+                name: xerv-config
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+```
 
 ## See Also
 
