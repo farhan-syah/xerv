@@ -3,6 +3,29 @@
 //! The WAL records every state transition in the execution of a trace.
 //! On crash, the WAL is replayed to recover the state of in-flight traces.
 //!
+//! # Deployment Modes and Durability
+//!
+//! XERV supports two deployment modes with different durability guarantees:
+//!
+//! ## Single-Node Mode (WAL)
+//!
+//! When running a single XERV instance, this WAL provides crash recovery:
+//! - Records trace lifecycle events (start, node completion, errors)
+//! - Enables recovery of in-flight traces after process restart
+//! - Uses CRC32 checksums for corruption detection
+//!
+//! ## Clustered Mode (Raft)
+//!
+//! When running XERV in a cluster (`xerv-cluster`), durability is provided
+//! by Raft's replicated log instead:
+//! - Commands are replicated across the cluster before acknowledgment
+//! - Raft's log provides durability and consistency guarantees
+//! - The WAL is **NOT used** in clustered mode to avoid duplication
+//!
+//! This separation ensures:
+//! - Single-node deployments don't need Raft overhead
+//! - Clustered deployments don't have redundant durability layers
+//!
 //! # Record Format
 //!
 //! Each WAL record has the following structure:

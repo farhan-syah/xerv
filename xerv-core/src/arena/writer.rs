@@ -21,13 +21,41 @@ pub const MAX_ARENA_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 pub const ENTRY_ALIGNMENT: usize = 8;
 
 /// Configuration for arena creation.
+///
+/// # Production Storage Considerations
+///
+/// **IMPORTANT**: The default directory `/tmp/xerv` is typically mounted as tmpfs
+/// on Linux systems, meaning:
+///
+/// - Data is stored in RAM, not on disk
+/// - Data survives **process crashes** (the mmap persists)
+/// - Data is **LOST on system reboot** (tmpfs is cleared)
+///
+/// For production deployments requiring true durability across system restarts:
+///
+/// ```rust,ignore
+/// let config = ArenaConfig::default()
+///     .with_directory("/var/lib/xerv/arenas")  // Persistent storage
+///     .with_sync(true);  // Ensure writes are fsync'd
+/// ```
+///
+/// Alternatively, use a dedicated fast disk mount point (NVMe recommended).
 #[derive(Debug, Clone)]
 pub struct ArenaConfig {
     /// Initial capacity in bytes.
     pub capacity: u64,
     /// Directory for arena files.
+    ///
+    /// Default: `/tmp/xerv` (tmpfs on most Linux systems).
+    /// **For production**: Use persistent storage like `/var/lib/xerv/arenas`.
     pub directory: PathBuf,
     /// Whether to sync writes to disk immediately.
+    ///
+    /// When `false` (default), writes are buffered by the OS. This is faster
+    /// but risks data loss on power failure.
+    ///
+    /// When `true`, each write is fsync'd to disk. This provides durability
+    /// guarantees but reduces throughput significantly.
     pub sync_on_write: bool,
 }
 
@@ -42,6 +70,42 @@ impl Default for ArenaConfig {
 }
 
 impl ArenaConfig {
+    /// Create configuration from environment variables.
+    ///
+    /// Reads the following environment variables:
+    /// - `XERV_DATA_DIR`: Base directory for arena files (default: `/tmp/xerv`)
+    /// - `XERV_ARENA_SYNC`: Enable sync on write (`true` or `false`, default: `false`)
+    ///
+    /// # Example
+    ///
+    /// ```bash
+    /// export XERV_DATA_DIR=/var/lib/xerv
+    /// export XERV_ARENA_SYNC=true
+    /// ```
+    pub fn from_env() -> Self {
+        let directory = std::env::var("XERV_DATA_DIR")
+            .map(|dir| PathBuf::from(dir).join("arenas"))
+            .unwrap_or_else(|_| PathBuf::from("/tmp/xerv"));
+
+        let sync_on_write = std::env::var("XERV_ARENA_SYNC")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(false);
+
+        Self {
+            capacity: DEFAULT_ARENA_SIZE,
+            directory,
+            sync_on_write,
+        }
+    }
+
+    /// Create configuration from environment variables, or use defaults.
+    ///
+    /// Same as `from_env()` but always returns a valid configuration.
+    pub fn from_env_or_default() -> Self {
+        Self::from_env()
+    }
+
     /// Create an in-memory configuration for testing.
     ///
     /// Uses a temporary directory with a unique name per invocation.

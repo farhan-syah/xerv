@@ -86,6 +86,52 @@ impl Default for WalConfig {
 }
 
 impl WalConfig {
+    /// Create configuration from environment variables.
+    ///
+    /// Reads the following environment variables:
+    /// - `XERV_DATA_DIR`: Base directory for WAL files (default: `/tmp/xerv`)
+    /// - `XERV_WAL_SYNC`: Enable sync on write (`true` or `false`, default: `true`)
+    /// - `XERV_WAL_GROUP_COMMIT`: Enable group commit for high throughput (`true` or `false`, default: `false`)
+    ///
+    /// # Example
+    ///
+    /// ```bash
+    /// export XERV_DATA_DIR=/var/lib/xerv
+    /// export XERV_WAL_SYNC=true
+    /// export XERV_WAL_GROUP_COMMIT=true
+    /// ```
+    pub fn from_env() -> Self {
+        let directory = std::env::var("XERV_DATA_DIR")
+            .map(|dir| PathBuf::from(dir).join("wal"))
+            .unwrap_or_else(|_| PathBuf::from("/tmp/xerv/wal"));
+
+        let sync_on_write = std::env::var("XERV_WAL_SYNC")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(true); // Default to true for WAL durability
+
+        let group_commit = std::env::var("XERV_WAL_GROUP_COMMIT")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .filter(|&enabled| enabled)
+            .map(|_| GroupCommitConfig::default());
+
+        Self {
+            directory,
+            max_file_size: 64 * 1024 * 1024, // 64 MB
+            sync_on_write,
+            buffer_size: 64 * 1024, // 64 KB
+            group_commit,
+        }
+    }
+
+    /// Create configuration from environment variables, or use defaults.
+    ///
+    /// Same as `from_env()` but always returns a valid configuration.
+    pub fn from_env_or_default() -> Self {
+        Self::from_env()
+    }
+
     /// Create an in-memory WAL configuration (uses a temp directory).
     pub fn in_memory() -> Self {
         Self {

@@ -5,6 +5,19 @@
 //! stored. Nodes access data via relative pointers (`RelPtr<T>`) without
 //! copying.
 //!
+//! # Storage Durability Warning
+//!
+//! **Default `/tmp/xerv` is tmpfs on most Linux systems**, meaning:
+//! - Data survives **process crashes** (memory-mapped files persist)
+//! - Data is **LOST on system reboot** (tmpfs is RAM-backed)
+//!
+//! For production, use persistent storage:
+//! ```rust,ignore
+//! let config = ArenaConfig::default()
+//!     .with_directory("/var/lib/xerv/arenas")
+//!     .with_sync(true);
+//! ```
+//!
 //! # Layout
 //!
 //! ```text
