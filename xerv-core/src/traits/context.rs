@@ -222,6 +222,22 @@ impl Context {
         &self.wal
     }
 
+    /// Get a reference to the arena reader.
+    ///
+    /// This is primarily used for WASM integration where the reader needs to be
+    /// cloned and moved into a blocking task.
+    pub fn reader(&self) -> &ArenaReader {
+        &self.reader
+    }
+
+    /// Get a reference to the arena writer.
+    ///
+    /// This is primarily used for WASM integration where the writer needs to be
+    /// cloned and moved into a blocking task.
+    pub fn writer(&self) -> &ArenaWriter {
+        &self.writer
+    }
+
     // Loop iteration tracking
 
     /// Get the current loop iteration count for a node.

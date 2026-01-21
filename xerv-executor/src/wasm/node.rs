@@ -144,9 +144,9 @@ impl Node for WasmNode {
             let trace_id = ctx.trace_id();
             let node_id = ctx.node_id();
 
-            // Clone what we need for the blocking task
-            let reader = ArenaReader::clone(&get_reader_from_context(&ctx)?);
-            let writer = get_writer_from_context(&ctx)?;
+            // Clone reader and writer from context for the blocking task
+            let reader = ArenaReader::clone(ctx.reader());
+            let writer = ArenaWriter::clone(ctx.writer());
 
             // Get providers from context
             let clock: Arc<dyn ClockProvider> = Arc::new(RealClock::new());
@@ -175,27 +175,6 @@ impl Node for WasmNode {
             Ok(result)
         })
     }
-}
-
-// Helper functions to extract arena handles from Context
-// Note: These are workarounds since Context doesn't expose reader/writer directly
-
-fn get_reader_from_context(ctx: &Context) -> Result<ArenaReader> {
-    // Context provides read_bytes which uses internal reader
-    // We need to create a reader that delegates to ctx
-    // For now, we'll use a workaround - this would need proper Context API
-    Err(XervError::WasmExecution {
-        node_id: ctx.node_id(),
-        cause: "Cannot extract ArenaReader from Context - API limitation".to_string(),
-    })
-}
-
-fn get_writer_from_context(ctx: &Context) -> Result<ArenaWriter> {
-    // Similar issue as above
-    Err(XervError::WasmExecution {
-        node_id: ctx.node_id(),
-        cause: "Cannot extract ArenaWriter from Context - API limitation".to_string(),
-    })
 }
 
 /// Internal executor that can be moved into spawn_blocking.
