@@ -57,6 +57,7 @@ pub fn test_arena_config() -> ArenaConfig {
 pub fn test_executor_config() -> ExecutorConfig {
     ExecutorConfig {
         max_concurrent_traces: 10,
+        max_concurrent_nodes: 4, // Reasonable concurrency for testing
         node_timeout_ms: 1_000,
         arena_config: test_arena_config(),
         wal_config: test_wal_config(),
