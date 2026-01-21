@@ -420,8 +420,8 @@ impl DispatchBackend for NatsDispatch {
             // If JetStream is enabled, query the stream for pending messages
             if self.config.use_jetstream {
                 // Get the stream (requires async lock)
-                let stream_guard = self.stream.lock().await;
-                if let Some(ref stream) = *stream_guard {
+                let mut stream_guard = self.stream.lock().await;
+                if let Some(stream) = stream_guard.as_mut() {
                     // Get stream info to know the range of messages
                     let info = stream
                         .info()
