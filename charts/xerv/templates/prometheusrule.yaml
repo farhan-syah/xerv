@@ -1,0 +1,162 @@
+{{- if .Values.monitoring.alerts.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "xerv.fullname" . }}
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+    {{- if .Values.monitoring.alerts.labels }}
+    {{- toYaml .Values.monitoring.alerts.labels | nindent 4 }}
+    {{- end }}
+  {{- with .Values.monitoring.alerts.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    - name: xerv.rules
+      rules:
+        # High Error Rate Alert
+        - alert: XervHighErrorRate
+          expr: |
+            (
+              sum(rate(xerv_failed_traces_total[5m]))
+              /
+              (sum(rate(xerv_completed_traces_total[5m])) + sum(rate(xerv_failed_traces_total[5m])))
+            ) > {{ .Values.monitoring.alerts.errorRateThreshold | default 0.05 }}
+          for: {{ .Values.monitoring.alerts.errorRateDuration | default "5m" }}
+          labels:
+            severity: warning
+            service: xerv
+          annotations:
+            summary: "XERV high error rate detected"
+            description: "Error rate is above {{ .Values.monitoring.alerts.errorRateThreshold | default 0.05 | mulf 100 }}% (current: {{ `{{ $value | humanizePercentage }}` }})"
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/high-error-rate.md"
+
+        # Critical Error Rate Alert
+        - alert: XervCriticalErrorRate
+          expr: |
+            (
+              sum(rate(xerv_failed_traces_total[5m]))
+              /
+              (sum(rate(xerv_completed_traces_total[5m])) + sum(rate(xerv_failed_traces_total[5m])))
+            ) > {{ .Values.monitoring.alerts.criticalErrorRateThreshold | default 0.20 }}
+          for: {{ .Values.monitoring.alerts.criticalErrorRateDuration | default "2m" }}
+          labels:
+            severity: critical
+            service: xerv
+          annotations:
+            summary: "XERV critical error rate"
+            description: "Error rate is critically high at {{ `{{ $value | humanizePercentage }}` }}"
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/high-error-rate.md"
+
+        # Queue Depth Warning
+        - alert: XervQueueDepthHigh
+          expr: xerv_dispatch_queue_depth > {{ .Values.monitoring.alerts.queueDepthWarning | default 100 }}
+          for: {{ .Values.monitoring.alerts.queueDepthDuration | default "5m" }}
+          labels:
+            severity: warning
+            service: xerv
+          annotations:
+            summary: "XERV dispatch queue depth high"
+            description: "Dispatch queue depth is {{ `{{ $value }}` }}, above threshold of {{ .Values.monitoring.alerts.queueDepthWarning | default 100 }}"
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/queue-depth.md"
+
+        # Queue Depth Critical
+        - alert: XervQueueDepthCritical
+          expr: xerv_dispatch_queue_depth > {{ .Values.monitoring.alerts.queueDepthCritical | default 500 }}
+          for: {{ .Values.monitoring.alerts.queueDepthCriticalDuration | default "2m" }}
+          labels:
+            severity: critical
+            service: xerv
+          annotations:
+            summary: "XERV dispatch queue depth critical"
+            description: "Dispatch queue depth is {{ `{{ $value }}` }}, above critical threshold of {{ .Values.monitoring.alerts.queueDepthCritical | default 500 }}. Consider scaling up or investigating bottlenecks."
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/queue-depth.md"
+
+        # Raft Leader Missing (only when using Raft backend)
+        {{- if or (eq .Values.dispatch.backend "raft") (eq .Values.dispatch.backend "memory") }}
+        - alert: XervRaftLeaderMissing
+          expr: sum(xerv_raft_leader) == 0
+          for: {{ .Values.monitoring.alerts.raftLeaderMissingDuration | default "1m" }}
+          labels:
+            severity: critical
+            service: xerv
+          annotations:
+            summary: "XERV Raft cluster has no leader"
+            description: "No Raft leader detected for the XERV cluster. This prevents new traces from being processed."
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/raft-leader.md"
+
+        # Raft Leader Flapping
+        - alert: XervRaftLeaderFlapping
+          expr: changes(xerv_raft_leader[10m]) > {{ .Values.monitoring.alerts.raftLeaderFlappingThreshold | default 3 }}
+          for: {{ .Values.monitoring.alerts.raftLeaderFlappingDuration | default "5m" }}
+          labels:
+            severity: warning
+            service: xerv
+          annotations:
+            summary: "XERV Raft leader is flapping"
+            description: "Raft leader has changed {{ `{{ $value }}` }} times in the last 10 minutes. This may indicate network issues or node instability."
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/raft-leader.md"
+        {{- end }}
+
+        # Arena Storage Low
+        - alert: XervArenaStorageHigh
+          expr: xerv_arena_size_bytes > {{ .Values.monitoring.alerts.arenaSizeWarning | default 1073741824 }}
+          for: {{ .Values.monitoring.alerts.arenaSizeDuration | default "5m" }}
+          labels:
+            severity: warning
+            service: xerv
+          annotations:
+            summary: "XERV arena memory usage high"
+            description: "Arena memory usage is {{ `{{ $value | humanize1024 }}` }}B for pipeline {{ `{{ $labels.pipeline }}` }}"
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/arena-storage.md"
+
+        # Arena Storage Critical
+        - alert: XervArenaStorageCritical
+          expr: xerv_arena_size_bytes > {{ .Values.monitoring.alerts.arenaSizeCritical | default 4294967296 }}
+          for: {{ .Values.monitoring.alerts.arenaSizeCriticalDuration | default "2m" }}
+          labels:
+            severity: critical
+            service: xerv
+          annotations:
+            summary: "XERV arena memory usage critical"
+            description: "Arena memory usage is {{ `{{ $value | humanize1024 }}` }}B for pipeline {{ `{{ $labels.pipeline }}` }}, approaching limits"
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/arena-storage.md"
+
+        # Slow Trace Execution
+        - alert: XervSlowTraceExecution
+          expr: histogram_quantile(0.95, sum(rate(xerv_trace_duration_seconds_bucket[5m])) by (le, pipeline)) > {{ .Values.monitoring.alerts.slowTraceThreshold | default 30 }}
+          for: {{ .Values.monitoring.alerts.slowTraceDuration | default "10m" }}
+          labels:
+            severity: warning
+            service: xerv
+          annotations:
+            summary: "XERV traces are executing slowly"
+            description: "95th percentile trace duration is {{ `{{ $value | humanizeDuration }}` }} for pipeline {{ `{{ $labels.pipeline }}` }}"
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/slow-traces.md"
+
+        # No Traces Being Processed
+        - alert: XervNoTracesProcessed
+          expr: sum(rate(xerv_completed_traces_total[5m]) + rate(xerv_failed_traces_total[5m])) == 0 and sum(xerv_pending_traces) > 0
+          for: {{ .Values.monitoring.alerts.noTracesProcessedDuration | default "5m" }}
+          labels:
+            severity: critical
+            service: xerv
+          annotations:
+            summary: "XERV is not processing traces"
+            description: "There are {{ `{{ $value }}` }} pending traces but no traces have been completed or failed in the last 5 minutes"
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/no-traces.md"
+
+        # Instance Down
+        - alert: XervInstanceDown
+          expr: up{job="{{ include "xerv.fullname" . }}"} == 0
+          for: {{ .Values.monitoring.alerts.instanceDownDuration | default "1m" }}
+          labels:
+            severity: critical
+            service: xerv
+          annotations:
+            summary: "XERV instance is down"
+            description: "XERV instance {{ `{{ $labels.instance }}` }} has been down for more than 1 minute"
+            runbook_url: "https://github.com/ml-rust/xerv/blob/main/docs/runbooks/instance-down.md"
+{{- end }}
