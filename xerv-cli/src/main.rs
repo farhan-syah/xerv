@@ -4,7 +4,7 @@ mod commands;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use xerv_executor::observability::{LogFormat, TracingConfig, init_tracing};
 
 /// XERV - Zero-copy, event-driven orchestration platform.
 #[derive(Parser)]
@@ -239,7 +239,7 @@ enum SchemaAction {
     },
 }
 
-fn setup_logging(verbosity: u8) {
+fn setup_logging(verbosity: u8) -> Result<xerv_executor::observability::TracingGuard> {
     let filter = match verbosity {
         0 => "warn",
         1 => "info",
@@ -247,16 +247,32 @@ fn setup_logging(verbosity: u8) {
         _ => "trace",
     };
 
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)))
-        .init();
+    // Check for explicit log format override, otherwise auto-detect
+    let log_format = std::env::var("XERV_LOG_FORMAT")
+        .map(|s| LogFormat::from_str(&s))
+        .unwrap_or_else(|_| {
+            if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                LogFormat::Pretty
+            } else {
+                LogFormat::Compact
+            }
+        });
+
+    // Build config, respecting RUST_LOG if set
+    let log_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| filter.to_string());
+
+    let config = TracingConfig::builder()
+        .log_format(log_format)
+        .log_filter(log_filter)
+        .build();
+
+    init_tracing(config)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    setup_logging(cli.verbose);
+    let _tracing_guard = setup_logging(cli.verbose)?;
 
     match cli.command {
         Commands::Deploy { file, dry_run } => commands::deploy::run(&file, dry_run).await,
