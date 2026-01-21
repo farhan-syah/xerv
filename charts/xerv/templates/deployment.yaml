@@ -70,6 +70,8 @@ spec:
               value: {{ .Values.dispatch.backend }}
             - name: XERV_API_PORT
               value: {{ .Values.server.apiPort | quote }}
+            - name: XERV_DATA_DIR
+              value: /data
             {{- if eq .Values.dispatch.backend "redis" }}
             - name: XERV_DISPATCH_REDIS_URL
               value: {{ .Values.dispatch.redis.url | quote }}
@@ -116,6 +118,8 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            - name: data
+              mountPath: /data
             - name: config
               mountPath: /config
               readOnly: true
@@ -123,6 +127,13 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "xerv.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         - name: config
           configMap:
             name: {{ include "xerv.fullname" . }}-config

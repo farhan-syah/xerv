@@ -65,7 +65,24 @@ metrics:
     scrapeTimeout: 10s
     labels: {}
 
-# Storage configuration
+# Persistence configuration for non-Raft deployments (memory, redis, nats backends)
+# For Raft backend, see 'storage' section below
+persistence:
+  # Enable persistent storage for arena and WAL files
+  enabled: true
+  # Use an existing PersistentVolumeClaim (optional)
+  existingClaim: ""
+  # Storage class (leave empty for default)
+  storageClass: ""
+  # Storage size
+  size: 10Gi
+  # Access mode
+  accessMode: ReadWriteOnce
+  # Annotations for PVC
+  annotations: {}
+
+# Storage configuration for Raft StatefulSet
+# Only used when dispatch.backend is "raft"
 storage:
   # Storage class (leave empty for default)
   class: ""

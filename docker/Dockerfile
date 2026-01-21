@@ -58,6 +58,10 @@ ENV XERV_API_PORT=8080 \
 # Expose ports
 EXPOSE 8080 9090
 
+# Declare volume for persistent data (arena, WAL)
+# Mount with: docker run -v xerv-data:/data ...
+VOLUME ["/data"]
+
 # Health check
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
