@@ -24,6 +24,12 @@ use redis::AsyncCommands;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+/// Redis stream message format: (stream_key, Vec<(message_id, Vec<(field, value)>)>)
+type RedisStreamMessage = (String, Vec<(String, Vec<(String, String)>)>);
+
+/// Redis message entry format: (message_id, Vec<(field, value)>)
+type RedisMessageEntry = (String, Vec<(String, String)>);
+
 /// Redis-based dispatch backend.
 ///
 /// Uses Redis Streams for reliable message delivery with consumer groups.
@@ -208,17 +214,16 @@ impl DispatchBackend for RedisDispatch {
                 let min_idle_time = self.config.message_timeout_ms;
 
                 // Try XAUTOCLAIM for stale messages
-                let claimed: redis::RedisResult<(String, Vec<(String, Vec<(String, String)>)>)> =
-                    redis::cmd("XAUTOCLAIM")
-                        .arg(&stream_key)
-                        .arg(group)
-                        .arg(consumer)
-                        .arg(min_idle_time)
-                        .arg("0-0") // Start from beginning
-                        .arg("COUNT")
-                        .arg(1)
-                        .query_async(&mut *conn)
-                        .await;
+                let claimed: redis::RedisResult<RedisStreamMessage> = redis::cmd("XAUTOCLAIM")
+                    .arg(&stream_key)
+                    .arg(group)
+                    .arg(consumer)
+                    .arg(min_idle_time)
+                    .arg("0-0") // Start from beginning
+                    .arg("COUNT")
+                    .arg(1)
+                    .query_async(&mut *conn)
+                    .await;
 
                 if let Ok((_, messages)) = claimed {
                     if let Some((msg_id, fields)) = messages.into_iter().next() {
@@ -253,9 +258,7 @@ impl DispatchBackend for RedisDispatch {
                 // Read new messages (XREADGROUP)
                 let block_ms = if timeout_ms > 0 { timeout_ms as i64 } else { 0 };
 
-                let result: redis::RedisResult<
-                    Vec<(String, Vec<(String, Vec<(String, String)>)>)>,
-                > = redis::cmd("XREADGROUP")
+                let result: redis::RedisResult<Vec<RedisStreamMessage>> = redis::cmd("XREADGROUP")
                     .arg("GROUP")
                     .arg(group)
                     .arg(consumer)
@@ -493,15 +496,14 @@ impl DispatchBackend for RedisDispatch {
                 let stream_key = self.stream_key();
 
                 // XRANGE to get all messages (expensive!)
-                let result: redis::RedisResult<Vec<(String, Vec<(String, String)>)>> =
-                    redis::cmd("XRANGE")
-                        .arg(&stream_key)
-                        .arg("-")
-                        .arg("+")
-                        .arg("COUNT")
-                        .arg(1000) // Limit for safety
-                        .query_async(&mut *conn)
-                        .await;
+                let result: redis::RedisResult<Vec<RedisMessageEntry>> = redis::cmd("XRANGE")
+                    .arg(&stream_key)
+                    .arg("-")
+                    .arg("+")
+                    .arg("COUNT")
+                    .arg(1000) // Limit for safety
+                    .query_async(&mut *conn)
+                    .await;
 
                 if let Ok(messages) = result {
                     for (_, fields) in messages {

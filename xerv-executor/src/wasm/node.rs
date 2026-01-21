@@ -205,6 +205,7 @@ struct WasmNodeExecutor {
 }
 
 impl WasmNodeExecutor {
+    #[allow(clippy::too_many_arguments)]
     fn execute_sync(
         &self,
         trace_id: TraceId,

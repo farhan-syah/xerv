@@ -1,6 +1,7 @@
 //! Configuration types for observability.
 
 use std::env;
+use std::str::FromStr;
 
 /// Log output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -14,15 +15,16 @@ pub enum LogFormat {
     Compact,
 }
 
-impl LogFormat {
-    /// Parse from string (case-insensitive).
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl FromStr for LogFormat {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "json" => Self::Json,
             "pretty" => Self::Pretty,
             "compact" => Self::Compact,
             _ => Self::default(),
-        }
+        })
     }
 }
 
@@ -81,8 +83,9 @@ impl TracingConfig {
     /// - `OTEL_SERVICE_NAME`: Service name (defaults to "xerv")
     pub fn from_env() -> Self {
         let log_format = env::var("XERV_LOG_FORMAT")
-            .map(|s| LogFormat::from_str(&s))
-            .unwrap_or_else(|_| {
+            .ok()
+            .and_then(|s| s.parse::<LogFormat>().ok())
+            .unwrap_or_else(|| {
                 // Auto-detect: JSON for non-TTY, pretty for TTY
                 if atty_check() {
                     LogFormat::Pretty

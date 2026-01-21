@@ -17,6 +17,45 @@ use xerv_core::error::XervError;
 use xerv_core::traits::{PipelineConfig, PipelineSettings};
 use xerv_core::types::PipelineId;
 
+/// Parse a version string into a numeric version.
+///
+/// Supports various formats:
+/// - "1" -> 1
+/// - "1.0" -> 1
+/// - "1.2.3" -> 1 (major version only)
+/// - "v1" -> 1
+/// - "v1.0" -> 1
+/// - "1.0.0-beta" -> 1
+///
+/// Returns 1 if parsing fails.
+fn parse_version_number(version: &str) -> u32 {
+    let version = version.trim();
+
+    // Strip leading 'v' or 'V'
+    let version = version
+        .strip_prefix('v')
+        .or_else(|| version.strip_prefix('V'))
+        .unwrap_or(version);
+
+    // Try to parse as simple integer first
+    if let Ok(v) = version.parse::<u32>() {
+        return v;
+    }
+
+    // Handle semver-like versions (take major version)
+    if let Some(major) = version.split('.').next() {
+        // Handle pre-release suffixes like "1-beta"
+        let major = major.split('-').next().unwrap_or(major);
+        if let Ok(v) = major.parse::<u32>() {
+            return v;
+        }
+    }
+
+    // Default to version 1 if parsing fails
+    tracing::warn!(version = %version, "Failed to parse version, defaulting to 1");
+    1
+}
+
 /// GET /api/v1/pipelines
 ///
 /// List all deployed pipelines.
@@ -66,10 +105,13 @@ pub async fn create(req: Request<Incoming>, state: Arc<AppState>) -> Response<Fu
         }
     };
 
-    // Create pipeline ID
+    // Create pipeline ID with properly parsed version
     let name = loaded.name().to_string();
-    let version = loaded.version().to_string();
-    let pipeline_id = PipelineId::new(&name, 1); // TODO: Parse version properly
+    let version_str = loaded.version().to_string();
+
+    // Parse version: supports "1", "1.0", "v1", "v1.0", etc.
+    let version_num = parse_version_number(&version_str);
+    let pipeline_id = PipelineId::new(&name, version_num);
 
     // Check if already exists
     let key = pipeline_id.to_string();
@@ -117,7 +159,7 @@ pub async fn create(req: Request<Incoming>, state: Arc<AppState>) -> Response<Fu
     let body = serde_json::json!({
         "pipeline_id": pipeline_id.to_string(),
         "name": name,
-        "version": version,
+        "version": version_str,
         "status": "deployed"
     });
 

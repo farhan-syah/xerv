@@ -80,7 +80,7 @@ impl Executor {
 
         // Apply timeout if configured
         if let Some(timeout_secs) = request.timeout_secs {
-            suspended = suspended.with_timeout(timeout_secs, request.timeout_action.into());
+            suspended = suspended.with_timeout(timeout_secs, request.timeout_action);
         }
 
         // Store in suspension store

@@ -53,23 +53,29 @@ fn update_metrics_from_state(metrics: &crate::metrics::Metrics, state: &AppState
     // Update trigger count
     metrics.set_registered_triggers(state.listener_pool.trigger_ids().len() as i64);
 
-    // Count traces from history
+    // Count traces from history - grouped by pipeline
     let trace_history = state.trace_history.read();
-    let mut running = 0i64;
-    let mut _completed = 0i64;
-    let mut _failed = 0i64;
+    let mut per_pipeline_running: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
 
     for trace in trace_history.all() {
-        match trace.status {
-            crate::api::state::TraceStatus::Running => running += 1,
-            crate::api::state::TraceStatus::Completed => _completed += 1,
-            crate::api::state::TraceStatus::Failed => _failed += 1,
+        if matches!(trace.status, crate::api::state::TraceStatus::Running) {
+            let pipeline_id = trace.pipeline_id.clone();
+            *per_pipeline_running.entry(pipeline_id).or_insert(0) += 1;
         }
     }
 
-    // Set active traces (running) - use "global" as pipeline for aggregate
-    // TODO: In a full implementation, we'd track per-pipeline metrics
-    metrics.set_active_traces("_global", "default", running);
+    // Set per-pipeline active traces metrics
+    for (pipeline_id, count) in per_pipeline_running {
+        metrics.set_active_traces(&pipeline_id, "default", count);
+    }
+
+    // Also set a global aggregate for backwards compatibility
+    let total_running: i64 = trace_history
+        .all()
+        .filter(|t| matches!(t.status, crate::api::state::TraceStatus::Running))
+        .count() as i64;
+    metrics.set_active_traces("_global", "default", total_running);
 }
 
 #[cfg(test)]

@@ -96,7 +96,7 @@ impl<T> MemoryBridge<T> {
         let mem_data = self.memory.data_mut(store);
         let dest = mem_data
             .get_mut(offset as usize..(offset + size) as usize)
-            .ok_or_else(|| XervError::WasmMemoryAlloc {
+            .ok_or(XervError::WasmMemoryAlloc {
                 requested: size as u64,
             })?;
         dest.copy_from_slice(data);

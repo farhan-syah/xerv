@@ -193,8 +193,10 @@ mod tests {
 
     #[test]
     fn validate_edge_count_limit() {
-        let mut limits = ValidationLimits::default();
-        limits.max_edge_count = 1;
+        let limits = ValidationLimits {
+            max_edge_count: 1,
+            ..Default::default()
+        };
 
         let mut flow = minimal_flow();
         flow.nodes
@@ -219,8 +221,10 @@ mod tests {
 
     #[test]
     fn validate_trigger_count_limit() {
-        let mut limits = ValidationLimits::default();
-        limits.max_trigger_count = 1;
+        let limits = ValidationLimits {
+            max_trigger_count: 1,
+            ..Default::default()
+        };
 
         let mut flow = minimal_flow();
         flow.triggers = vec![
