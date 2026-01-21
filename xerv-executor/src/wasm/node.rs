@@ -145,8 +145,8 @@ impl Node for WasmNode {
             let node_id = ctx.node_id();
 
             // Clone reader and writer from context for the blocking task
-            let reader = ArenaReader::clone(ctx.reader());
-            let writer = ArenaWriter::clone(ctx.writer());
+            let reader = ctx.reader().clone();
+            let writer = ctx.writer().clone();
 
             // Get providers from context
             let clock: Arc<dyn ClockProvider> = Arc::new(RealClock::new());
