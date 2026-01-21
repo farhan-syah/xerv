@@ -37,6 +37,13 @@ k8s-openapi = { version = "0.24", features = ["v1_32"] }
 # Async utilities
 futures = "0.3"
 
+# HTTP client for health checks (workspace dependencies)
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+http.workspace = true
+bytes.workspace = true
+
 # Schema generation
 schemars = "0.8"
 

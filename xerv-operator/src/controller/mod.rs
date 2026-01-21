@@ -1,7 +1,11 @@
 //! Kubernetes controllers for XERV resources.
 //!
-//! This module contains the reconciliation logic for XervCluster and XervPipeline
-//! custom resources.
+//! This module contains the reconciliation logic for XERV custom resources:
+//!
+//! - [`ClusterController`]: Manages XervCluster resources
+//! - [`PipelineController`]: Manages XervPipeline resources
+//! - [`FederationController`]: Manages XervFederation resources
+//! - [`FederatedPipelineController`]: Manages FederatedPipeline resources
 //!
 //! # Usage with kube-runtime
 //!
@@ -20,9 +24,15 @@
 //! ```
 
 mod cluster;
+mod federated_pipeline;
+mod federation;
 mod pipeline;
 
 pub use cluster::{ClusterController, error_policy as cluster_error_policy};
+pub use federated_pipeline::{
+    FederatedPipelineController, error_policy as federated_pipeline_error_policy,
+};
+pub use federation::{FederationController, error_policy as federation_error_policy};
 pub use pipeline::{PipelineController, error_policy as pipeline_error_policy};
 
 /// Shared context for controllers.
