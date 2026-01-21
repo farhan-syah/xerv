@@ -1,0 +1,41 @@
+[package]
+name = "xerv-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "../README.md"
+description = "Type-safe Rust client for the XERV workflow orchestration API"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# Core dependencies
+xerv-core.workspace = true
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+urlencoding = "2.1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Types
+uuid = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
