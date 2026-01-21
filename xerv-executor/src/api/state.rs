@@ -4,7 +4,8 @@ use crate::listener::ListenerPool;
 use crate::pipeline::PipelineController;
 use crate::suspension::{MemorySuspensionStore, SuspensionStore};
 use parking_lot::RwLock;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use xerv_core::auth::AuthConfig;
@@ -33,6 +34,8 @@ pub struct AppState {
     pub auth_config: AuthConfig,
     /// Suspension store for human-in-the-loop workflows.
     pub suspension_store: Arc<dyn SuspensionStore>,
+    /// Simple in-memory rate limiter.
+    pub rate_limiter: RateLimiter,
 }
 
 impl AppState {
@@ -46,6 +49,7 @@ impl AppState {
             log_collector: Arc::new(BufferedCollector::new(MAX_LOG_EVENTS)),
             auth_config: AuthConfig::default(),
             suspension_store: Arc::new(MemorySuspensionStore::new()),
+            rate_limiter: RateLimiter::new(),
         }
     }
 
@@ -63,6 +67,7 @@ impl AppState {
             log_collector: Arc::new(BufferedCollector::new(MAX_LOG_EVENTS)),
             auth_config,
             suspension_store: Arc::new(MemorySuspensionStore::new()),
+            rate_limiter: RateLimiter::new(),
         }
     }
 
@@ -80,6 +85,7 @@ impl AppState {
             log_collector,
             auth_config: AuthConfig::default(),
             suspension_store: Arc::new(MemorySuspensionStore::new()),
+            rate_limiter: RateLimiter::new(),
         }
     }
 
@@ -98,6 +104,7 @@ impl AppState {
             log_collector,
             auth_config,
             suspension_store: Arc::new(MemorySuspensionStore::new()),
+            rate_limiter: RateLimiter::new(),
         }
     }
 
@@ -115,6 +122,7 @@ impl AppState {
             log_collector: Arc::new(BufferedCollector::new(MAX_LOG_EVENTS)),
             auth_config: AuthConfig::default(),
             suspension_store,
+            rate_limiter: RateLimiter::new(),
         }
     }
 
@@ -188,6 +196,10 @@ pub enum TraceStatus {
     Completed,
     /// Trace failed.
     Failed,
+    /// Trace suspended for human input.
+    Suspended,
+    /// Trace canceled by user.
+    Canceled,
 }
 
 impl TraceStatus {
@@ -197,7 +209,47 @@ impl TraceStatus {
             Self::Running => "running",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Suspended => "suspended",
+            Self::Canceled => "canceled",
         }
+    }
+}
+
+/// Simple fixed-window rate limiter.
+pub struct RateLimiter {
+    requests: RwLock<HashMap<IpAddr, VecDeque<Instant>>>,
+    max_per_window: usize,
+    window: std::time::Duration,
+}
+
+impl RateLimiter {
+    pub fn new() -> Self {
+        Self {
+            requests: RwLock::new(HashMap::new()),
+            max_per_window: 20,
+            window: std::time::Duration::from_secs(1),
+        }
+    }
+
+    pub fn allow(&self, ip: IpAddr) -> bool {
+        let mut requests = self.requests.write();
+        let now = Instant::now();
+        let queue = requests.entry(ip).or_default();
+
+        while let Some(front) = queue.front() {
+            if now.duration_since(*front) > self.window {
+                queue.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if queue.len() >= self.max_per_window {
+            return false;
+        }
+
+        queue.push_back(now);
+        true
     }
 }
 

@@ -116,7 +116,12 @@ impl ApiServer {
                     tokio::spawn(async move {
                         let service = service_fn(move |req| {
                             let state = Arc::clone(&state);
-                            async move { router::route(req, state).await }
+                            let remote_ip = remote_addr.ip();
+                            async move {
+                                let mut req = req;
+                                req.extensions_mut().insert(remote_ip);
+                                router::route(req, state).await
+                            }
                         });
 
                         if let Err(e) = http1::Builder::new().serve_connection(io, service).await {

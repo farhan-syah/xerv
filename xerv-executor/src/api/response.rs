@@ -2,8 +2,30 @@
 
 use bytes::Bytes;
 use http_body_util::Full;
+use hyper::http::header::{self, HeaderValue};
 use hyper::{Response, StatusCode};
 use serde::Serialize;
+
+const CSP_HEADER: &str = "default-src 'self'; \
+ script-src 'self' 'wasm-unsafe-eval'; \
+ style-src 'self' 'unsafe-inline'; \
+ img-src 'self' data: https:; \
+ connect-src 'self'; \
+ font-src 'self'; \
+ object-src 'none'; \
+ base-uri 'self'; \
+ form-action 'self'; \
+ frame-ancestors 'none'; \
+ upgrade-insecure-requests;";
+
+fn apply_security_headers(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CSP_HEADER),
+    );
+    response
+}
 
 /// Build a JSON response with status code.
 pub fn json_response<T: Serialize>(status: StatusCode, body: &T) -> Response<Full<Bytes>> {
@@ -18,11 +40,12 @@ pub fn json_response<T: Serialize>(status: StatusCode, body: &T) -> Response<Ful
         .to_string()
     });
 
-    Response::builder()
+    let response = Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
         .body(Full::new(Bytes::from(json)))
-        .expect("response builder should not fail")
+        .expect("response builder should not fail");
+    apply_security_headers(response)
 }
 
 /// Build a 200 OK JSON response.
@@ -37,10 +60,11 @@ pub fn created<T: Serialize>(body: &T) -> Response<Full<Bytes>> {
 
 /// Build a 204 No Content response.
 pub fn no_content() -> Response<Full<Bytes>> {
-    Response::builder()
+    let response = Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body(Full::new(Bytes::new()))
-        .expect("response builder should not fail")
+        .expect("response builder should not fail");
+    apply_security_headers(response)
 }
 
 /// Build a 404 Not Found response.
@@ -65,12 +89,28 @@ pub fn method_not_allowed(allowed: &[&str]) -> Response<Full<Bytes>> {
         }
     });
 
-    Response::builder()
+    let response = Response::builder()
         .status(StatusCode::METHOD_NOT_ALLOWED)
         .header("Content-Type", "application/json")
         .header("Allow", allowed.join(", "))
         .body(Full::new(Bytes::from(body.to_string())))
-        .expect("response builder should not fail")
+        .expect("response builder should not fail");
+    apply_security_headers(response)
+}
+
+/// Build a YAML response with status code.
+pub fn yaml_response(status: StatusCode, yaml: impl Into<String>) -> Response<Full<Bytes>> {
+    let response = Response::builder()
+        .status(status)
+        .header("Content-Type", "application/x-yaml")
+        .body(Full::new(Bytes::from(yaml.into())))
+        .expect("response builder should not fail");
+    apply_security_headers(response)
+}
+
+/// Build a 200 OK YAML response.
+pub fn ok_yaml(yaml: impl Into<String>) -> Response<Full<Bytes>> {
+    yaml_response(StatusCode::OK, yaml)
 }
 
 /// Build a 401 Unauthorized response.
@@ -83,12 +123,13 @@ pub fn unauthorized(message: &str) -> Response<Full<Bytes>> {
         }
     });
 
-    Response::builder()
+    let response = Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header("Content-Type", "application/json")
         .header("WWW-Authenticate", "ApiKey")
         .body(Full::new(Bytes::from(body.to_string())))
-        .expect("response builder should not fail")
+        .expect("response builder should not fail");
+    apply_security_headers(response)
 }
 
 /// Build a 403 Forbidden response.
@@ -101,6 +142,69 @@ pub fn forbidden(message: &str) -> Response<Full<Bytes>> {
         }
     });
     json_response(StatusCode::FORBIDDEN, &body)
+}
+
+/// Build a raw bytes response (used for static assets).
+pub fn bytes_response(
+    status: StatusCode,
+    content_type: &str,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let response = Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .body(Full::new(body))
+        .expect("response builder should not fail");
+    apply_security_headers(response)
+}
+
+/// Build a 429 Too Many Requests response.
+pub fn too_many_requests(message: &str) -> Response<Full<Bytes>> {
+    let body = serde_json::json!({
+        "error": {
+            "code": "E1003",
+            "message": message,
+            "status": 429
+        }
+    });
+    json_response(StatusCode::TOO_MANY_REQUESTS, &body)
+}
+
+/// Build a CORS preflight response.
+pub fn preflight() -> Response<Full<Bytes>> {
+    let response = Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Full::new(Bytes::new()))
+        .expect("response builder should not fail");
+    apply_security_headers(response)
+}
+
+/// Apply CORS headers for a request.
+pub fn apply_cors_headers(
+    mut response: Response<Full<Bytes>>,
+    origin: Option<&str>,
+) -> Response<Full<Bytes>> {
+    let allow_origin = origin.unwrap_or("*");
+    if let Ok(value) = HeaderValue::from_str(allow_origin) {
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+    }
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"),
+    );
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Content-Type, X-API-Key, X-CSRF-Token"),
+    );
+    if origin.is_some() {
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            HeaderValue::from_static("true"),
+        );
+    }
+    response
 }
 
 #[cfg(test)]
