@@ -353,3 +353,75 @@ serviceMesh:
         canaryWeight: 100
         # Canary service name suffix
         canarySuffix: "-canary"
+
+# Monitoring and Observability
+monitoring:
+  # Prometheus alerts configuration
+  alerts:
+    # Enable PrometheusRule creation
+    enabled: false
+    # Additional labels for PrometheusRule
+    labels: {}
+    # Annotations for PrometheusRule
+    annotations: {}
+
+    # Error rate thresholds
+    # Warning threshold (5% = 0.05)
+    errorRateThreshold: 0.05
+    errorRateDuration: "5m"
+    # Critical threshold (20% = 0.20)
+    criticalErrorRateThreshold: 0.20
+    criticalErrorRateDuration: "2m"
+
+    # Queue depth thresholds
+    queueDepthWarning: 100
+    queueDepthDuration: "5m"
+    queueDepthCritical: 500
+    queueDepthCriticalDuration: "2m"
+
+    # Raft leader alerts (only for raft backend)
+    raftLeaderMissingDuration: "1m"
+    raftLeaderFlappingThreshold: 3
+    raftLeaderFlappingDuration: "5m"
+
+    # Arena storage thresholds (in bytes)
+    # Warning: 1GB = 1073741824
+    arenaSizeWarning: 1073741824
+    arenaSizeDuration: "5m"
+    # Critical: 4GB = 4294967296
+    arenaSizeCritical: 4294967296
+    arenaSizeCriticalDuration: "2m"
+
+    # Slow trace threshold (in seconds)
+    slowTraceThreshold: 30
+    slowTraceDuration: "10m"
+
+    # No traces processed alert
+    noTracesProcessedDuration: "5m"
+
+    # Instance down alert
+    instanceDownDuration: "1m"
+
+  # Grafana dashboards
+  dashboards:
+    # Enable dashboard ConfigMap creation
+    enabled: false
+    # Labels for Grafana dashboard discovery
+    labels:
+      grafana_dashboard: "1"
+
+  # Logging configuration
+  logging:
+    # Log format: json, pretty, compact
+    format: json
+    # Log level: trace, debug, info, warn, error
+    level: info
+
+  # Distributed tracing (OpenTelemetry)
+  tracing:
+    # Enable OpenTelemetry tracing
+    enabled: false
+    # OTLP endpoint (e.g., http://jaeger-collector:4317)
+    endpoint: ""
+    # Service name for traces
+    serviceName: "xerv"
