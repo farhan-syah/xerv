@@ -19,6 +19,7 @@ pub mod linker;
 pub mod listener;
 pub mod loader;
 pub mod metrics;
+pub mod observability;
 pub mod pipeline;
 pub mod recovery;
 pub mod scheduler;
@@ -37,6 +38,9 @@ pub mod prelude {
     pub use crate::listener::{Listener, ListenerId, ListenerPool};
     pub use crate::loader::{FlowBuilder, FlowLoader, LoadedFlow, LoaderConfig, LoaderError};
     pub use crate::metrics::{Metrics, global_metrics, init_global_metrics, try_global_metrics};
+    pub use crate::observability::{
+        LogFormat, TracingConfig, TracingConfigBuilder, TracingGuard, init_tracing,
+    };
     pub use crate::pipeline::{Pipeline, PipelineController, PipelineMetrics};
     pub use crate::recovery::{CrashReplayer, RecoveryAction, RecoveryReport};
     pub use crate::scheduler::{
