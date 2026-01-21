@@ -49,6 +49,61 @@ Start here if you're new to XERV:
   - Idempotency and snapshot testing
   - Best practices
 
+## Deployment & Operations
+
+### Complete Deployment Guide
+
+- **[Deployment Guide](deployment.md)** - Comprehensive deployment strategies for all scenarios (40 min read)
+  - Quick start by scenario (dev, single-node, cluster, cloud)
+  - Deployment matrix and backend selection guide
+  - Raft, Redis, NATS configuration examples
+  - Environment variables reference
+  - Production checklist
+  - Troubleshooting and disaster recovery
+  - Performance tuning guide
+
+### Cloud-Native Deployment
+
+- **[Helm Chart Documentation](../charts/xerv/README.md)** - Kubernetes deployment guide (35 min read)
+  - Dispatch backend selection (Memory, Raft, Redis, NATS)
+  - Storage configuration for Raft persistence
+  - Resource requests/limits and auto-scaling
+  - Ingress configuration
+  - Service mesh integration (Istio, Linkerd)
+  - Multi-cluster federation setup
+  - Observability stack (Prometheus, Grafana, Jaeger, Loki)
+  - 15+ example configurations
+
+### Docker Deployment
+
+- **[Docker Compose Guide](../docker/README.md)** - Local development and single-node production (10 min read)
+  - Quick start with Memory backend
+  - Redis backend setup
+  - NATS backend setup
+  - Environment variables and configuration
+
+### High-Availability Clustering
+
+- **Raft Consensus** - Built-in distributed coordination
+  - Automatic leader election and failover
+  - State replication across nodes
+  - Membership management
+  - Persistent storage for durability
+
+### Scalability Options
+
+- **Memory Backend** - Single-node, high-throughput (10k+ traces/sec)
+- **Raft Backend** - Multi-node consensus (safe scaling, odd number of replicas)
+- **Redis Backend** - Stateless workers with shared queue (scale freely, 50k+ traces/sec)
+- **NATS Backend** - Cloud-native streaming (scale-to-zero with KEDA, multi-region support)
+
+### Observability
+
+- **Metrics** - Prometheus metrics at `/metrics` with Grafana dashboard
+- **Logging** - Structured JSON logging for Loki/ELK integration
+- **Tracing** - OpenTelemetry support for Jaeger/Tempo
+- **Alerting** - PrometheusRule templates for key metrics
+
 ## Feature Guides
 
 ### Triggers
@@ -128,10 +183,12 @@ Want to integrate XERV into your application?
 
 Want to deploy and manage XERV?
 
-1. [Getting Started](getting-started.md) - Server setup section
-2. [Quick Reference](quick-reference.md) - Configuration quick lookup
-3. [REST API Reference](api.md) - For monitoring and management
-4. [Architecture](architecture.md) - For understanding deployment requirements
+1. [Docker Deployment](../docker/README.md) - Quick local setup or single-node production
+2. [Helm Chart Documentation](../charts/xerv/README.md) - Kubernetes production deployments
+3. [Dispatch Backends](#cloud-native-deployment) - Understanding scalability options
+4. [Observability](#observability) - Monitoring and alerting setup
+5. [REST API Reference](api.md) - For monitoring and management
+6. [Architecture](architecture.md) - For understanding deployment requirements
 
 ### Workflow Designer
 
@@ -203,19 +260,28 @@ Want to contribute to XERV core?
 ```
 xerv/
 ├── README.md                      # Project overview
+├── charts/xerv/README.md          # Helm chart documentation
+├── docker/README.md               # Docker Compose guide
 └── docs/
     ├── INDEX.md                   # This file
     ├── getting-started.md         # Setup and first example
     ├── quick-reference.md         # Lookup tables and cheat sheets
     ├── architecture.md            # Deep technical details
+    ├── deployment.md              # Deployment strategies and operations
     ├── triggers.md                # Event source documentation
-    ├── suspension-system.md        # Human-in-the-loop workflows
+    ├── suspension-system.md       # Human-in-the-loop workflows
     ├── api.md                     # REST API reference
     ├── nodes.md                   # Custom node development
     └── testing.md                 # Testing guide
 ```
 
-## Contributing to Documentation
+## Documentation Maintenance
+
+### Recent Audit
+
+See [AUDIT_SUMMARY.md](AUDIT_SUMMARY.md) for a comprehensive audit of documentation accuracy against the current implementation. All documentation has been verified and updated to ensure accuracy.
+
+### Contributing to Documentation
 
 To improve XERV documentation:
 
@@ -225,13 +291,33 @@ To improve XERV documentation:
 4. **For code examples** - Ensure they compile with the current codebase
 5. **For diagrams** - Use mermaid syntax for consistency
 
-Documentation should:
+Documentation must:
 
-- Be accurate and reflect actual implementation
+- Be accurate and reflect actual implementation (see audit procedure below)
 - Include working code examples
 - Be organized for quick navigation
 - Serve both beginners and experienced users
 - Provide troubleshooting guidance
+
+### Audit Procedure
+
+When making changes to implementation, verify documentation:
+
+```bash
+# 1. Verify API changes are documented
+grep -r "your_new_feature" docs/
+
+# 2. Check example code still compiles
+cargo test --doc
+
+# 3. Build Docker examples
+docker compose build
+
+# 4. Test Helm chart
+helm template xerv ./charts/xerv | kubectl apply -f - --dry-run=client
+
+# 5. Update AUDIT_SUMMARY.md with changes
+```
 
 ## External Resources
 

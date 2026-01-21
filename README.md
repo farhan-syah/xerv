@@ -182,12 +182,14 @@ graph TB
 ### Nodes
 
 A **node** is a discrete unit of work. Nodes:
+
 - Have typed input/output ports
 - Execute async functions
 - Write results to the arena
 - Can be written in Rust or WebAssembly
 
 **Flow Control Nodes:**
+
 - **`std::merge`** - N→1 barrier (waits for all inputs before continuing)
 - **`std::split`** - 1→N fan-out (iterates over collection, spawning parallel executions)
 - **`std::switch`** - Conditional routing (branches execution based on expression evaluation)
@@ -195,6 +197,7 @@ A **node** is a discrete unit of work. Nodes:
 - **`std::wait`** - Human-in-the-loop approval (suspends trace pending external decision)
 
 **Data Manipulation Nodes:**
+
 - **`std::map`** - Field renaming and transformation (maps input fields to output schema)
 - **`std::concat`** - String concatenation (joins multiple strings with separator)
 - **`std::aggregate`** - Numeric aggregation (sum, avg, min, max over collections)
@@ -205,31 +208,38 @@ A **node** is a discrete unit of work. Nodes:
 A **trigger** initiates pipeline execution in response to events. Available triggers:
 
 **HTTP Triggers:**
+
 - **`webhook`** - HTTP POST endpoint that accepts incoming events
 
 **Time-Based Triggers:**
+
 - **`cron`** - Scheduled execution using cron expressions (e.g., `"0 12 * * *"`)
 
 **File System Triggers:**
+
 - **`filesystem`** - Watches directories for file creation/modification/deletion events
 
 **Message Queue Triggers:**
+
 - **`queue`** - In-memory message queue for inter-process communication
 - **`kafka`** - Kafka topic consumer for distributed event streaming
 
 **Testing Triggers:**
+
 - **`manual`** - Manual invocation for testing and development
 - **`memory`** - Direct memory injection for benchmarking
 
 ### Edges
 
 An **edge** connects output port of one node to input port of another. Format:
+
 ```
 from: node_name.port_name
 to: other_node.input_port_name
 ```
 
 For conditional nodes like `std::switch`, use special ports:
+
 ```
 from: fraud_check.true    # When condition is true
 to: process_risky
@@ -248,11 +258,13 @@ ${pipeline.config.max_value}
 ```
 
 Selectors are resolved at runtime by the **linker**, which:
+
 1. Parses selector expressions from config
 2. Maps node fields to arena offsets (RelPtr<T>)
 3. Provides type-safe access during execution
 
 Example in a node config:
+
 ```yaml
 nodes:
   check_limit:
@@ -261,7 +273,7 @@ nodes:
       condition:
         type: greater_than
         field: amount
-        value: ${pipeline.config.limit}  # Resolved at link time
+        value: ${pipeline.config.limit} # Resolved at link time
 ```
 
 ### Arena
@@ -269,6 +281,7 @@ nodes:
 The **arena** is a memory-mapped file where all trace data lives. Each trace gets its own arena at `/tmp/xerv/trace_{uuid}.bin`.
 
 Layout:
+
 ```mermaid
 graph TD
     A["Header<br/>(metadata + config offset)"]
@@ -297,6 +310,7 @@ Nodes access data via **relative pointers** (`RelPtr<T>`), which are stable acro
 ### Write-Ahead Log (WAL)
 
 The **WAL** records node completions before execution continues. On crash:
+
 1. Incomplete nodes replay from their input
 2. Complete nodes skip execution
 3. Results are read from the arena
@@ -306,56 +320,95 @@ This enables **fault-tolerant** trace execution.
 ## Key Features
 
 ### Fault Tolerance
+
 - **Write-Ahead Log (WAL)** - Node completions recorded before execution continues
 - **Crash Recovery** - Automatic replay of incomplete nodes after failure
 - **Idempotent Execution** - Safe to retry traces without duplicating side effects
 - **Circuit Breaker** - Automatic pipeline pausing on high error rates
 
-### High Availability (New)
+### Scalability & Deployment
+
+- **Pluggable Dispatch Backends** - Choose from Memory (local), Raft (consensus), Redis (cloud), or NATS (streaming)
+- **Horizontal Scaling** - Auto-scale workers based on queue depth or custom metrics
+- **Kubernetes-Ready** - Full Helm chart with HPA, KEDA, VPA support
+- **Docker Compose** - Quick local dev with zero configuration
+- **Multi-Cluster Federation** - Deploy across regions with automatic failover
+
+### High Availability
+
 - **Distributed Clustering** - Multi-node coordination via OpenRaft Raft consensus
 - **Leader Election** - Automatic failover when leader node fails
 - **State Replication** - Consistent trace state across cluster nodes
 - **gRPC Network Transport** - Efficient inter-node communication
+- **Service Mesh Compatible** - Istio and Linkerd integration for enterprise security
 
 ### Human-in-the-Loop
+
 - **Suspension System** - Pause traces pending external approval or decision
 - **Manual Resume** - Resume suspended traces with updated context
 - **Timeout Handling** - Automatic failure or skip after configurable duration
 
 ### Testing & Debugging
+
 - **Mock Providers** - Clock, HTTP, filesystem, RNG, secrets, environment
 - **Deterministic Execution** - Fixed time and seeds produce consistent results
 - **Trace Introspection** - Inspect completed nodes, outputs, and execution state
 - **Chaos Testing** - Inject failures to test error handling
 
-### Operations
+### Production Operations
+
 - **REST API** - Full pipeline lifecycle and trace management
-- **Metrics Collection** - Execution statistics and performance data
-- **Logging & Tracing** - Structured logs with trace ID correlation
+- **Prometheus Metrics** - Built-in metrics endpoint with Grafana dashboards
+- **Structured Logging** - JSON logs with trace ID correlation for ELK/Loki integration
+- **Distributed Tracing** - OpenTelemetry integration with Jaeger/Tempo support
+- **Alert Rules** - PrometheusRule templates for key metrics (error rate, queue depth, leader health)
 - **Resource Cleanup** - Automatic cleanup of timed-out traces, WAL segments, and arena files
 - **Graceful Shutdown** - Clean termination of in-flight traces and listeners
 
 ## Documentation
 
-- **[Getting Started](docs/getting-started.md)** - Setup guide (5 minutes to first flow)
+### Getting Started (5-15 minutes)
+
+- **[Getting Started](docs/getting-started.md)** - Setup guide with working example (5 minutes)
 - **[Quick Reference](docs/quick-reference.md)** - Node types, triggers, API endpoints at a glance
-- **[Architecture Deep Dive](docs/architecture.md)** - Understand the arena, scheduler, and execution model
-- **[Triggers](docs/triggers.md)** - Configure event sources (webhooks, cron, kafka, filesystem)
-- **[REST API Reference](docs/api.md)** - Complete API documentation with examples
-- **[Suspension System](docs/suspension-system.md)** - Human-in-the-loop workflows with approvals
+- **[Docker Setup](docker/README.md)** - Quick local dev with Docker Compose
+
+### Architecture & Design (30-40 minutes)
+
+- **[Architecture Deep Dive](docs/architecture.md)** - Arena, scheduler, execution model, dispatch backends
+- **[Deployment Guide](docs/deployment.md)** - Choose your backend (Memory/Raft/Redis/NATS), deploy anywhere
+
+### Operations & Deployment (20-40 minutes)
+
+- **[Helm Chart (Kubernetes)](charts/xerv/README.md)** - Production deployments with auto-scaling
+- **[Docker Compose](docker/README.md)** - Single-node or local development
+- **[Deployment Scenarios](docs/deployment.md)** - Dev, on-prem, cloud, multi-region
+
+### Features & Advanced Usage (20-40 minutes)
+
+- **[Triggers](docs/triggers.md)** - Webhook, Cron, Kafka, Filesystem event sources
+- **[Suspension System](docs/suspension-system.md)** - Human-in-the-loop approval workflows
 - **[Writing Custom Nodes](docs/nodes.md)** - Build your own node types
 - **[Testing Guide](docs/testing.md)** - Deterministic testing with mocks
+
+### Reference
+
+- **[REST API Reference](docs/api.md)** - Complete API documentation with examples
+- **[Documentation Index](docs/INDEX.md)** - Complete guide to all resources
 
 ## Project Structure
 
 ```
 xerv/
-├── xerv-core/      # Arena, WAL, core traits (Node, Schema, Context)
-├── xerv-nodes/     # Standard library (merge, split, switch, loop)
-├── xerv-executor/  # Scheduler, linker, pipeline controller, REST API
-├── xerv-cluster/   # Distributed clustering with OpenRaft consensus
-├── xerv-cli/       # CLI binary (deploy, dev, inspect, bench)
-└── xerv-macros/    # Procedural macros (#[xerv::node], #[xerv::schema])
+├── xerv-core/       # Arena, WAL, core traits, dispatch backends (Memory/Raft/Redis/NATS)
+├── xerv-nodes/      # Standard library (merge, split, switch, loop, wait, etc.)
+├── xerv-executor/   # Scheduler, linker, pipeline controller, REST API, observability
+├── xerv-cluster/    # Distributed clustering with OpenRaft consensus
+├── xerv-operator/   # Kubernetes operator for advanced deployments
+├── xerv-cli/        # CLI binary (serve, inspect, validate)
+├── xerv-macros/     # Procedural macros (#[xerv::node], #[xerv::schema])
+├── charts/xerv      # Helm chart for Kubernetes deployments
+└── docker/          # Docker Compose configs (Memory/Raft/Redis/NATS)
 ```
 
 ## Development
