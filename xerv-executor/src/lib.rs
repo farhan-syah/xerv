@@ -26,6 +26,7 @@ pub mod scheduler;
 pub mod suspension;
 pub mod testing;
 pub mod trace;
+pub mod validation;
 
 #[cfg(feature = "wasm")]
 pub mod wasm;
