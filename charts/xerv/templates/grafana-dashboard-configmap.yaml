@@ -1,0 +1,14 @@
+{{- if .Values.monitoring.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "xerv.fullname" . }}-grafana-dashboard
+  labels:
+    {{- include "xerv.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.dashboards.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  xerv-overview.json: |-
+{{ .Files.Get "dashboards/xerv-overview.json" | indent 4 }}
+{{- end }}
