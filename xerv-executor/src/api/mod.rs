@@ -47,6 +47,7 @@ mod response;
 mod router;
 mod server;
 mod state;
+pub mod yaml_security;
 
 pub use error::ApiError;
 pub use server::{ApiServer, ServerConfig};
