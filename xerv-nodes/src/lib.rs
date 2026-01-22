@@ -25,6 +25,7 @@
 
 pub mod data;
 pub mod flow;
+pub mod registry;
 pub mod triggers;
 
 // Flow control exports
