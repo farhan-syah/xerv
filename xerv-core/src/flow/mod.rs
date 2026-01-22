@@ -48,16 +48,17 @@
 
 mod definition;
 mod edge;
+mod metadata;
 mod node;
 mod settings;
 mod trigger;
 mod validation;
 
-pub use definition::{
-    CanvasState, FlowDefinition, FlowLoadError, FlowMetadata, NodePosition, NodeUiState,
-    UiMetadata, ViewportOffset,
-};
+pub use definition::{FlowDefinition, FlowLoadError};
 pub use edge::EdgeDefinition;
+pub use metadata::{
+    CanvasState, FlowMetadata, NodePosition, NodeUiState, UiMetadata, ViewportOffset,
+};
 pub use node::NodeDefinition;
 pub use settings::FlowSettings;
 pub use trigger::TriggerDefinition;
