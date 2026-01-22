@@ -2,6 +2,7 @@
 
 use crate::traits::{TriggerConfig, TriggerType};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// A trigger definition from YAML.
 ///
@@ -29,7 +30,8 @@ use serde::{Deserialize, Serialize};
 ///       recursive: true
 ///       events: ["create", "modify"]
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../web/src/bindings/")]
 pub struct TriggerDefinition {
     /// Unique identifier for this trigger.
     pub id: String,
@@ -40,6 +42,7 @@ pub struct TriggerDefinition {
 
     /// Type-specific parameters.
     #[serde(default)]
+    #[ts(skip)]
     pub params: serde_yaml::Value,
 
     /// Whether the trigger is enabled.

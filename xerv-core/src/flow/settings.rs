@@ -2,13 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use ts_rs::TS;
 
 /// Runtime settings for a flow.
 ///
 /// These settings control execution behavior like concurrency limits,
 /// timeouts, and circuit breaker configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "../web/src/bindings/")]
 pub struct FlowSettings {
     /// Maximum concurrent trace executions.
     #[serde(default = "default_max_concurrent")]

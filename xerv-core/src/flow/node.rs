@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use ts_rs::TS;
 
 /// A node definition from YAML.
 ///
@@ -30,7 +31,8 @@ use std::collections::HashMap;
 ///       operation: sum
 ///       field: amount
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../web/src/bindings/")]
 pub struct NodeDefinition {
     /// Node type (e.g., "std::switch", "std::merge", "plugins::fraud_model").
     #[serde(rename = "type")]
@@ -38,6 +40,7 @@ pub struct NodeDefinition {
 
     /// Node-specific configuration.
     #[serde(default)]
+    #[ts(skip)]
     pub config: serde_yaml::Value,
 
     /// Optional description.
@@ -66,7 +69,8 @@ fn default_enabled() -> bool {
 }
 
 /// Retry configuration for a node.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../web/src/bindings/")]
 pub struct RetryConfig {
     /// Maximum number of retry attempts.
     #[serde(default = "default_max_retries")]

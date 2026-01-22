@@ -1,6 +1,7 @@
 //! Edge definition from YAML.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// An edge definition connecting nodes in a flow.
 ///
@@ -29,7 +30,8 @@ use serde::{Deserialize, Serialize};
 ///     to: node_b.in
 ///     condition: "${node_a.status} == 'success'"
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../web/src/bindings/")]
 pub struct EdgeDefinition {
     /// Source node and optional port (format: "node_id" or "node_id.port").
     pub from: String,
