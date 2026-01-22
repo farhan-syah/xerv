@@ -3,6 +3,7 @@
 //! Handles unstructured or volatile JSON payloads without strict schemas.
 //! Enables late binding and runtime field resolution.
 
+use crate::registry::{NodeCategory, NodeMetadata, PortDefinition, PortType, icons};
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
@@ -337,6 +338,56 @@ impl Node for JsonDynamicNode {
 
             Ok(NodeOutput::out(output_ptr))
         })
+    }
+}
+
+impl NodeMetadata for JsonDynamicNode {
+    fn metadata() -> crate::registry::NodeInfo {
+        crate::registry::NodeInfo {
+            node_type: "std::json_dynamic".to_string(),
+            category: NodeCategory::Data,
+            display_name: "JSON Dynamic".to_string(),
+            description: "Handle schemaless/dynamic JSON payloads without strict schemas. Enables late binding and runtime field resolution for volatile JSON structures.".to_string(),
+            icon: icons::ICON_JSON_DYNAMIC,
+            inputs: vec![PortDefinition::required("in", PortType::Any)],
+            outputs: vec![
+                PortDefinition::required("out", PortType::Any),
+                PortDefinition::required("error", PortType::Any),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["passthrough", "extract", "merge", "set", "delete", "flatten"],
+                        "default": "passthrough",
+                        "description": "JSON operation to perform"
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Fields to extract (for extract operation)"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Field path (for set or delete operations)"
+                    },
+                    "value": {
+                        "description": "Value to set (for set operation)"
+                    },
+                    "separator": {
+                        "type": "string",
+                        "default": "_",
+                        "description": "Separator for flattening nested objects"
+                    },
+                    "required_fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Fields that must be present in input"
+                    }
+                }
+            }),
+        }
     }
 }
 

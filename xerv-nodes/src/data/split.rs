@@ -3,6 +3,7 @@
 //! Takes an array/collection and emits each element separately,
 //! enabling parallel processing of individual items.
 
+use crate::registry::{NodeCategory, NodeMetadata, PortDefinition, PortType, icons};
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
@@ -225,6 +226,45 @@ impl Node for SplitNode {
             // to process the next item, or execute downstream nodes first depending on mode
             Ok(NodeOutput::new("out", item_ptr))
         })
+    }
+}
+
+impl NodeMetadata for SplitNode {
+    fn metadata() -> crate::registry::NodeInfo {
+        crate::registry::NodeInfo {
+            node_type: "std::split".to_string(),
+            category: NodeCategory::Data,
+            display_name: "Split".to_string(),
+            description: "Fan-out iterator that processes each item in a collection separately. Takes an array field from the input and emits each element as a separate output.".to_string(),
+            icon: icons::ICON_SPLIT,
+            inputs: vec![PortDefinition::required("in", PortType::Any)],
+            outputs: vec![
+                PortDefinition::required("out", PortType::Any),
+                PortDefinition::required("done", PortType::Any),
+                PortDefinition::required("error", PortType::Any),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "field": {
+                        "type": "string",
+                        "description": "Array field path to iterate (e.g., $.items or data.list)"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["sequential", "parallel", "batched"],
+                        "default": "sequential",
+                        "description": "Processing mode: sequential (one at a time), parallel (concurrent), batched (groups)"
+                    },
+                    "batch_size": {
+                        "type": "integer",
+                        "description": "Batch size (only for batched mode)",
+                        "minimum": 1
+                    }
+                },
+                "required": ["field"]
+            }),
+        }
     }
 }
 

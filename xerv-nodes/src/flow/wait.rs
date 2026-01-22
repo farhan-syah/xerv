@@ -9,6 +9,7 @@
 //! not a per-node setting. Use `Executor::with_suspension_store()` to configure
 //! the storage backend (in-memory, Redis, database, etc.).
 
+use crate::registry::{NodeCategory, NodeMetadata, PortDefinition, PortType, icons};
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
@@ -208,6 +209,57 @@ impl Node for WaitNode {
             // 4. Wait for external resume via API
             Ok(NodeOutput::suspend(request, input))
         })
+    }
+}
+
+impl NodeMetadata for WaitNode {
+    fn metadata() -> crate::registry::NodeInfo {
+        crate::registry::NodeInfo {
+            node_type: "std::wait".to_string(),
+            category: NodeCategory::FlowControl,
+            display_name: "Wait".to_string(),
+            description: "Pause execution for human-in-the-loop approval or external signal. Suspends the trace and waits for webhook callback, API approval, or timeout-based auto-action.".to_string(),
+            icon: icons::ICON_WAIT,
+            inputs: vec![PortDefinition::required("in", PortType::Any)],
+            outputs: vec![
+                PortDefinition::required("out", PortType::Any),
+                PortDefinition::required("rejected", PortType::Any),
+                PortDefinition::required("escalated", PortType::Any),
+                PortDefinition::required("error", PortType::Any),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "hook_id": {
+                        "type": "string",
+                        "description": "Unique identifier for this wait hook (can include ${trace_id} template)"
+                    },
+                    "resume_method": {
+                        "type": "string",
+                        "enum": ["webhook", "api_approval", "timeout"],
+                        "default": "webhook",
+                        "description": "How the wait can be resumed"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Timeout duration in seconds (for timeout resume method)",
+                        "minimum": 1
+                    },
+                    "timeout_action": {
+                        "type": "string",
+                        "enum": ["approve", "reject", "escalate"],
+                        "default": "reject",
+                        "description": "Action to take on timeout"
+                    },
+                    "metadata_fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Fields to extract from input for approval UI display"
+                    }
+                },
+                "required": ["hook_id"]
+            }),
+        }
     }
 }
 

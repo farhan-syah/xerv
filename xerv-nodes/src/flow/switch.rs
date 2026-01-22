@@ -3,6 +3,7 @@
 //! Routes data to different output ports based on a condition expression.
 //! Similar to a conditional branch in programming.
 
+use crate::registry::{NodeCategory, NodeMetadata, PortDefinition, PortType, icons};
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
@@ -315,6 +316,33 @@ impl Node for SwitchNode {
                 Ok(NodeOutput::on_false(input))
             }
         })
+    }
+}
+
+impl NodeMetadata for SwitchNode {
+    fn metadata() -> crate::registry::NodeInfo {
+        crate::registry::NodeInfo {
+            node_type: "std::switch".to_string(),
+            category: NodeCategory::FlowControl,
+            display_name: "Switch".to_string(),
+            description: "Conditional routing based on selector expression. Routes data to different output ports (true/false) based on evaluating a condition.".to_string(),
+            icon: icons::ICON_SWITCH,
+            inputs: vec![PortDefinition::required("input", PortType::Any)],
+            outputs: vec![
+                PortDefinition::required("true", PortType::Any),
+                PortDefinition::required("false", PortType::Any),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "condition": {
+                        "type": "string",
+                        "description": "Selector expression to evaluate (e.g., ${input.value} > 100)"
+                    }
+                },
+                "required": ["condition"]
+            }),
+        }
     }
 }
 

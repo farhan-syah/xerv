@@ -2,6 +2,7 @@
 //!
 //! Aggregates numeric values from arrays or multiple fields.
 
+use crate::registry::{NodeCategory, NodeMetadata, PortDefinition, PortType, icons};
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
@@ -263,6 +264,70 @@ impl Node for AggregateNode {
 
             Ok(NodeOutput::out(output_ptr))
         })
+    }
+}
+
+impl NodeMetadata for AggregateNode {
+    fn metadata() -> crate::registry::NodeInfo {
+        crate::registry::NodeInfo {
+            node_type: "std::aggregate".to_string(),
+            category: NodeCategory::Data,
+            display_name: "Aggregate".to_string(),
+            description: "Aggregate numeric values (sum, average, min, max, count, product) from arrays or multiple fields. Produces a single aggregated result.".to_string(),
+            icon: icons::ICON_AGGREGATE,
+            inputs: vec![PortDefinition::required("in", PortType::Any)],
+            outputs: vec![
+                PortDefinition::required("out", PortType::Any),
+                PortDefinition::required("error", PortType::Any),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["sum", "average", "min", "max", "count", "product"],
+                        "default": "sum",
+                        "description": "Aggregation operation to perform"
+                    },
+                    "source": {
+                        "type": "object",
+                        "description": "Source of values to aggregate",
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "type": {"const": "array"},
+                                    "array_path": {
+                                        "type": "string",
+                                        "description": "Path to array field"
+                                    },
+                                    "value_field": {
+                                        "type": "string",
+                                        "description": "Optional sub-field to extract from each array element"
+                                    }
+                                }
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "type": {"const": "fields"},
+                                    "fields": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Multiple field paths to aggregate"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "output_field": {
+                        "type": "string",
+                        "description": "Output field name for the aggregation result"
+                    }
+                },
+                "required": ["operation", "output_field"]
+            }),
+        }
     }
 }
 

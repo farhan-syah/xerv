@@ -2,6 +2,7 @@
 //!
 //! Combines multiple string fields or values into a single string.
 
+use crate::registry::{NodeCategory, NodeMetadata, PortDefinition, PortType, icons};
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
@@ -178,6 +179,60 @@ impl Node for ConcatNode {
 
             Ok(NodeOutput::out(output_ptr))
         })
+    }
+}
+
+impl NodeMetadata for ConcatNode {
+    fn metadata() -> crate::registry::NodeInfo {
+        crate::registry::NodeInfo {
+            node_type: "std::concat".to_string(),
+            category: NodeCategory::Data,
+            display_name: "Concat".to_string(),
+            description: "Combine multiple string fields or literal values into a single string. Supports field references, literal strings, and separators between parts.".to_string(),
+            icon: icons::ICON_CONCAT,
+            inputs: vec![PortDefinition::required("in", PortType::Any)],
+            outputs: vec![
+                PortDefinition::required("out", PortType::Any),
+                PortDefinition::required("error", PortType::Any),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "parts": {
+                        "type": "array",
+                        "description": "Parts to concatenate (field paths or literal strings)",
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {"const": "literal"},
+                                        "value": {"type": "string"}
+                                    }
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {"const": "field"},
+                                        "path": {"type": "string"}
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "separator": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Separator between parts"
+                    },
+                    "output_field": {
+                        "type": "string",
+                        "description": "Output field name for the concatenated result"
+                    }
+                },
+                "required": ["parts", "output_field"]
+            }),
+        }
     }
 }
 

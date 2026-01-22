@@ -4,6 +4,7 @@
 //! It collects data from multiple upstream nodes and merges them into
 //! a single output.
 
+use crate::registry::{NodeCategory, NodeMetadata, PortDefinition, PortType, icons};
 use rkyv;
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
@@ -155,6 +156,36 @@ impl Node for MergeNode {
 
             Ok(NodeOutput::out(merged_ptr))
         })
+    }
+}
+
+impl NodeMetadata for MergeNode {
+    fn metadata() -> crate::registry::NodeInfo {
+        crate::registry::NodeInfo {
+            node_type: "std::merge".to_string(),
+            category: NodeCategory::FlowControl,
+            display_name: "Merge".to_string(),
+            description: "N→1 barrier that waits for all inputs before proceeding. Collects data from multiple upstream nodes and merges them into a single output.".to_string(),
+            icon: icons::ICON_MERGE,
+            inputs: vec![PortDefinition::multiple("input", PortType::Any)],
+            outputs: vec![PortDefinition::required("output", PortType::Any)],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "strategy": {
+                        "type": "string",
+                        "enum": ["all", "any", "count"],
+                        "default": "all",
+                        "description": "Merge strategy: all (wait for all), any (first arrival), count (specific number)"
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of inputs to wait for (only for count strategy)",
+                        "minimum": 1
+                    }
+                }
+            }),
+        }
     }
 }
 

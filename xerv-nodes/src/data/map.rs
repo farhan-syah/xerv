@@ -3,6 +3,7 @@
 //! Transforms data by renaming, extracting, or restructuring fields.
 //! Designed for zero-copy operations where possible.
 
+use crate::registry::{NodeCategory, NodeMetadata, PortDefinition, PortType, icons};
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
@@ -256,6 +257,54 @@ impl Node for MapNode {
 
             Ok(NodeOutput::out(output_ptr))
         })
+    }
+}
+
+impl NodeMetadata for MapNode {
+    fn metadata() -> crate::registry::NodeInfo {
+        crate::registry::NodeInfo {
+            node_type: "std::map".to_string(),
+            category: NodeCategory::Data,
+            display_name: "Map".to_string(),
+            description: "Transform data by mapping fields to new names. Supports field renaming, nested field extraction, default values for missing fields, and passthrough of unmapped fields.".to_string(),
+            icon: icons::ICON_MAP,
+            inputs: vec![PortDefinition::required("in", PortType::Any)],
+            outputs: vec![
+                PortDefinition::required("out", PortType::Any),
+                PortDefinition::required("error", PortType::Any),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "mappings": {
+                        "type": "array",
+                        "description": "Field mappings to apply",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from": {
+                                    "type": "string",
+                                    "description": "Source field path (e.g., user.name or $.data.id)"
+                                },
+                                "to": {
+                                    "type": "string",
+                                    "description": "Target field name in output (supports nested paths like user.full_name)"
+                                },
+                                "default": {
+                                    "description": "Default value if source is missing"
+                                }
+                            },
+                            "required": ["from", "to"]
+                        }
+                    },
+                    "passthrough": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Include unmapped fields in output"
+                    }
+                }
+            }),
+        }
     }
 }
 

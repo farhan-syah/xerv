@@ -4,6 +4,7 @@
 //! Loop back-edges must be declared in the flow graph to avoid
 //! cycle detection errors.
 
+use crate::registry::{NodeCategory, NodeMetadata, PortDefinition, PortType, icons};
 use std::collections::HashMap;
 use xerv_core::traits::{Context, Node, NodeFuture, NodeInfo, NodeOutput, Port, PortDirection};
 use xerv_core::types::RelPtr;
@@ -392,6 +393,55 @@ impl Node for LoopNode {
                 Ok(NodeOutput::new("continue", input))
             }
         })
+    }
+}
+
+impl NodeMetadata for LoopNode {
+    fn metadata() -> crate::registry::NodeInfo {
+        crate::registry::NodeInfo {
+            node_type: "std::loop".to_string(),
+            category: NodeCategory::FlowControl,
+            display_name: "Loop".to_string(),
+            description: "Controlled iteration with configurable exit conditions. Continues looping until the exit condition is met, with a configurable safety limit on maximum iterations.".to_string(),
+            icon: icons::ICON_LOOP,
+            inputs: vec![PortDefinition::required("in", PortType::Any)],
+            outputs: vec![
+                PortDefinition::required("continue", PortType::Any),
+                PortDefinition::required("exit", PortType::Any),
+                PortDefinition::required("error", PortType::Any),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "max_iterations": {
+                        "type": "integer",
+                        "description": "Maximum number of iterations (safety limit)",
+                        "default": 10,
+                        "minimum": 1
+                    },
+                    "until_field_equals": {
+                        "type": "object",
+                        "description": "Exit when a field equals a value",
+                        "properties": {
+                            "field": {"type": "string"},
+                            "value": {"type": "string"}
+                        }
+                    },
+                    "until_true": {
+                        "type": "string",
+                        "description": "Exit when a boolean field becomes true"
+                    },
+                    "until_false": {
+                        "type": "string",
+                        "description": "Exit when a boolean field becomes false"
+                    },
+                    "until_expression": {
+                        "type": "string",
+                        "description": "Exit based on expression evaluation (supports ${field} and ${iteration})"
+                    }
+                }
+            }),
+        }
     }
 }
 
