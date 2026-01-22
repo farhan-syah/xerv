@@ -1,6 +1,7 @@
 //! Request body parsing utilities.
 
 use crate::api::error::ApiError;
+use crate::api::yaml_security;
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::Request;
@@ -47,6 +48,24 @@ pub async fn read_body_json<T: serde::de::DeserializeOwned>(
 
     serde_json::from_str(&body)
         .map_err(|e| ApiError::bad_request("E000", format!("Invalid JSON: {}", e)))
+}
+
+/// Read the request body as YAML string with security validation.
+///
+/// This function:
+/// 1. Reads the request body as a string
+/// 2. Validates YAML security (size limits, dangerous tags)
+/// 3. Returns the validated YAML string for further processing
+///
+/// Use this instead of `read_body_string()` when processing YAML pipeline definitions
+/// to ensure security validation is applied consistently.
+pub async fn read_body_yaml(req: Request<Incoming>) -> Result<String, ApiError> {
+    let yaml = read_body_string(req).await?;
+
+    // Validate YAML security (size limits, dangerous tags)
+    yaml_security::validate_yaml_security(&yaml).map_err(ApiError::from)?;
+
+    Ok(yaml)
 }
 
 #[cfg(test)]

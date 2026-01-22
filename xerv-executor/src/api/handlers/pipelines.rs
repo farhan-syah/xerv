@@ -91,8 +91,8 @@ pub async fn list(state: Arc<AppState>) -> Response<Full<Bytes>> {
 ///
 /// Deploy a new pipeline from YAML.
 pub async fn create(req: Request<Incoming>, state: Arc<AppState>) -> Response<Full<Bytes>> {
-    // Read YAML body
-    let yaml = match request::read_body_string(req).await {
+    // Read and validate YAML body with security checks
+    let yaml = match request::read_body_yaml(req).await {
         Ok(y) => y,
         Err(e) => return e.into_response(),
     };
@@ -172,7 +172,8 @@ pub async fn create(req: Request<Incoming>, state: Arc<AppState>) -> Response<Fu
 ///
 /// Validate a pipeline definition without deploying.
 pub async fn validate(req: Request<Incoming>, _state: Arc<AppState>) -> Response<Full<Bytes>> {
-    let yaml = match request::read_body_string(req).await {
+    // Read and validate YAML body with security checks
+    let yaml = match request::read_body_yaml(req).await {
         Ok(y) => y,
         Err(e) => return e.into_response(),
     };
@@ -194,7 +195,8 @@ pub async fn validate_deploy(
     _state: Arc<AppState>,
     pipeline_id: &str,
 ) -> Response<Full<Bytes>> {
-    let yaml = match request::read_body_string(req).await {
+    // Read and validate YAML body with security checks
+    let yaml = match request::read_body_yaml(req).await {
         Ok(y) => y,
         Err(e) => return e.into_response(),
     };
@@ -249,8 +251,8 @@ pub async fn update(
     state: Arc<AppState>,
     pipeline_id: &str,
 ) -> Response<Full<Bytes>> {
-    // Read YAML body
-    let yaml = match request::read_body_string(req).await {
+    // Read and validate YAML body with security checks
+    let yaml = match request::read_body_yaml(req).await {
         Ok(y) => y,
         Err(e) => return e.into_response(),
     };
