@@ -74,6 +74,9 @@ http = "1.1"
 # JSON (for dynamic data handling)
 serde_json = "1.0"
 
+# TypeScript type generation
+ts-rs = "9.0"
+
 # Cron scheduling
 cron = "0.15"
 

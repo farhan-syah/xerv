@@ -26,6 +26,7 @@ dispatch-all = ["xerv-core/dispatch-all"]
 
 [dependencies]
 xerv-core.workspace = true
+xerv-nodes.workspace = true
 
 # Workspace dependencies
 tokio.workspace = true
